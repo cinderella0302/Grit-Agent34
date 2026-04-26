@@ -215,6 +215,48 @@ function buildTaskDiscoverySection(taskText: string, cwd: string): string {
 			}
 		}
 
+		// If the task names a bare filename (e.g. `foo.py`) that doesn't already exist,
+		// provide a deterministic, non-root placement hint based on the primary surface.
+		const namedFiles = extractNamedFiles(taskText);
+		const newBareFiles = namedFiles
+			.filter((file) => !file.includes("/") && !file.includes("\\"))
+			.filter((file) => {
+				try {
+					return !existsSync(resolve(cwd, file));
+				} catch {
+					return true;
+				}
+			});
+		if (newBareFiles.length > 0) {
+			let baseDir = "";
+			if (topFile && topFile.includes("/")) {
+				baseDir = topFile.substring(0, topFile.lastIndexOf("/"));
+			}
+			if (!baseDir) {
+				const fallbacks = ["src", "app", "lib", "scripts", "packages"];
+				for (const candidate of fallbacks) {
+					try {
+						const stat = statSync(resolve(cwd, candidate));
+						if (stat.isDirectory()) {
+							baseDir = candidate;
+							break;
+						}
+					} catch {
+						// ignore
+					}
+				}
+			}
+
+			if (baseDir && baseDir !== ".") {
+				sections.push("\nNEW FILE PLACEMENT hint (bare filenames only):");
+				for (const file of newBareFiles.slice(0, 8)) {
+					sections.push(`- ${file} -> ${baseDir}/${file}`);
+				}
+				sections.push("Use these paths for new files; do not place bare filenames at repo root.");
+			}
+		}
+
+
 		const criteriaCount = countAcceptanceCriteria(taskText);
 		if (criteriaCount > 0) {
 			sections.push(`\nThis task has ${criteriaCount} acceptance criteria.`);
@@ -236,9 +278,9 @@ function buildTaskDiscoverySection(taskText: string, cwd: string): string {
 			}
 		}
 		sections.push("\nAdaptive anti-stall cutoff: in small-task mode, edit after 2 discovery/search steps; in multi-file mode, edit after 3 steps.");
-		const namedFiles = extractNamedFiles(taskText);
+
 		if (namedFiles.length > 0) {
-			sections.push(`\nFiles named in the task text: ${namedFiles.map(f => `\`${f}\``).join(", ")}.`);
+			sections.push(`\nFiles named in the task text: ${namedFiles.map((f) => `\`${f}\``).join(", ")}.`);
 			sections.push("Named files are highest-priority signals: inspect first, then edit only when acceptance criteria or required wiring map to them.");
 		}
 		sections.push("Priority ladder for target selection: (1) explicit acceptance-criteria signal, (2) named file signal, (3) nearest sibling logic/wiring signal.");
