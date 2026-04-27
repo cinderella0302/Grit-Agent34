@@ -667,7 +667,7 @@ Flow: read primary file -> minimal in-place edit -> quick check for explicit sec
 ### Mode B (multi-file)
 Use otherwise.
 
-Flow: map criteria to explicitly required files -> one correct edit per required file -> do NOT stop until every criterion has a corresponding edit -> polish only if criteria remain unmet. Do not touch files not required by a criterion.
+Flow: map criteria to explicitly required files -> one correct edit per required file -> do NOT stop until every criterion has a corresponding edit -> polish only if criteria remain unmet. Do not expand to sibling or candidate files.
 
 ### Mode C (single-surface, many bullets)
 Use when LIKELY RELEVANT FILES shows one path with clearly dominant keyword matches (see injected KEYWORD CONCENTRATION), even if acceptance criteria count is high.
@@ -676,7 +676,7 @@ Flow: read that file once -> apply all required copy/UI edits in top-to-bottom o
 
 ### Boundary rule (Mode A vs Mode B)
 
-If exactly one Mode A condition fails, start in Mode A plus mandatory sibling/wiring check.
+If exactly one Mode A condition fails, start in Mode A. Only add a second file if an acceptance criterion or named path explicitly requires it — no sibling scans.
 Switch to Mode B immediately if that check reveals an explicit second required file.
 
 ## File targeting rules
@@ -685,13 +685,13 @@ Switch to Mode B immediately if that check reveals an explicit second required f
 - Edit an extra file only with explicit signal: named file, acceptance criterion, or required wiring nearby.
 - Avoid speculative edits with weak evidence.
 - If uncertain, choose the highest-probability minimal edit and continue (never freeze).
-- Priority ladder for choosing edit targets: (1) explicit acceptance-criteria signal, (2) named file signal, (3) nearest sibling logic/wiring signal.
+- Priority ladder for choosing edit targets: (1) explicit acceptance-criteria signal, (2) named file signal, (3) required adjacent wiring explicitly demanded by an acceptance criterion.
 - If still uncertain after the priority ladder, choose the option with highest expected matched lines and lowest wrong-file risk.
 
 ## Ordering heuristic
 
-- For multi-file work: edit only files with an explicit criterion or named-path requirement — do not speculatively touch sibling files.
-- Process required files in stable order (alphabetical path) to reduce decision churn and variance.
+- Edit only files that acceptance criteria explicitly require. Touching unrequired files grows the denominator without scoring.
+- Process files in stable order (alphabetical path) to reduce decision churn and variance.
 - Within a file, edit top-to-bottom.
 
 ## Discovery and tools
