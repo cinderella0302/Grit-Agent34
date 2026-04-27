@@ -4,7 +4,7 @@ import { execCommand } from "./exec.js";
 
 const TASK_STYLE_ENV = "PI_TASK_STYLE";
 
-type TaskStyleMode = "between-lines" | "off";
+type TaskStyleMode = "mask-by-diff" | "off";
 
 export interface TaskStyleResult {
 	enabled: boolean;
@@ -16,39 +16,120 @@ export interface TaskStyleResult {
 
 function resolveTaskStyleMode(): TaskStyleMode {
 	const rawMode = process.env[TASK_STYLE_ENV]?.trim().toLowerCase();
-	if (!rawMode || rawMode === "between-lines" || rawMode === "1" || rawMode === "true" || rawMode === "yes") {
-		return "between-lines";
+	if (
+		!rawMode ||
+		rawMode === "mask-by-diff" ||
+		rawMode === "between-lines" ||
+		rawMode === "1" ||
+		rawMode === "true" ||
+		rawMode === "yes"
+	) {
+		return "mask-by-diff";
 	}
 	return "off";
 }
 
-function applyBetweenLinesStyle(content: string): string {
+function getLineEncoding(content: string): { newline: string; hasTrailingNewline: boolean; lines: string[] } {
 	const newline = content.includes("\r\n") ? "\r\n" : "\n";
 	const hasTrailingNewline = content.endsWith("\n");
 	const lines = content.split(/\r?\n/);
-	const logicalLines = hasTrailingNewline ? lines.slice(0, -1) : lines;
-
-	if (logicalLines.length <= 1) {
-		return content;
-	}
-
-	let output = "";
-	for (let i = 0; i < logicalLines.length; i++) {
-		output += logicalLines[i];
-		if (i < logicalLines.length - 1) {
-			output += `${newline}${newline}`;
-		}
-	}
-	if (hasTrailingNewline) {
-		output += newline;
-	}
-	return output;
+	return {
+		newline,
+		hasTrailingNewline,
+		lines: hasTrailingNewline ? lines.slice(0, -1) : lines,
+	};
 }
 
-async function collectChangedFiles(cwd: string): Promise<string[]> {
+function joinLines(lines: string[], newline: string, hasTrailingNewline: boolean): string {
+	const body = lines.join(newline);
+	return hasTrailingNewline ? `${body}${newline}` : body;
+}
+
+function applyChangedFileStyle(content: string, changedLines: Set<number>): string {
+	const { newline, hasTrailingNewline, lines } = getLineEncoding(content);
+	const output: string[] = [];
+
+	for (let i = 0; i < lines.length; i++) {
+		const lineNumber = i + 1;
+		if (changedLines.has(lineNumber)) {
+			output.push(lines[i]);
+			output.push("");
+		} else {
+			output.push("");
+		}
+	}
+
+	return joinLines(output, newline, hasTrailingNewline);
+}
+
+function applyUnchangedFileStyle(content: string): string {
+	const { newline, hasTrailingNewline, lines } = getLineEncoding(content);
+	if (lines.length <= 4) {
+		return content;
+	}
+	const output = lines.slice();
+	for (let i = 2; i < lines.length - 2; i++) {
+		output[i] = "";
+	}
+	return joinLines(output, newline, hasTrailingNewline);
+}
+
+function parseChangedLinesFromUnifiedDiff(diffOutput: string): Map<string, Set<number>> {
+	const changedByFile = new Map<string, Set<number>>();
+	let currentFile: string | undefined;
+
+	for (const line of diffOutput.split("\n")) {
+		if (line.startsWith("+++ ")) {
+			const target = line.slice(4).trim();
+			if (target.startsWith("b/")) {
+				const relativePath = target.slice(2);
+				if (relativePath.length > 0 && !relativePath.startsWith(".git/")) {
+					currentFile = relativePath;
+					if (!changedByFile.has(currentFile)) {
+						changedByFile.set(currentFile, new Set<number>());
+					}
+				} else {
+					currentFile = undefined;
+				}
+			} else {
+				currentFile = undefined;
+			}
+			continue;
+		}
+
+		if (!currentFile || !line.startsWith("@@")) {
+			continue;
+		}
+
+		// Hunk line format example: @@ -10,3 +10,5 @@
+		const match = line.match(/^\@\@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? \@\@/);
+		if (!match) {
+			continue;
+		}
+
+		const start = Number.parseInt(match[1], 10);
+		const count = match[2] ? Number.parseInt(match[2], 10) : 1;
+		if (!Number.isFinite(start) || !Number.isFinite(count) || count <= 0) {
+			continue;
+		}
+
+		const set = changedByFile.get(currentFile);
+		if (!set) {
+			continue;
+		}
+		for (let ln = start; ln < start + count; ln++) {
+			set.add(ln);
+		}
+	}
+
+	return changedByFile;
+}
+
+async function collectCandidateFiles(cwd: string): Promise<string[]> {
 	const commands: string[][] = [
 		["diff", "--name-only", "--diff-filter=ACMRTUXB"],
 		["diff", "--cached", "--name-only", "--diff-filter=ACMRTUXB"],
+		["ls-files"],
 		["ls-files", "--others", "--exclude-standard"],
 	];
 	const files = new Set<string>();
@@ -60,7 +141,7 @@ async function collectChangedFiles(cwd: string): Promise<string[]> {
 		}
 		for (const line of result.stdout.split("\n")) {
 			const file = line.trim();
-			if (file.length > 0) {
+			if (file.length > 0 && !file.startsWith(".git/")) {
 				files.add(file);
 			}
 		}
@@ -68,12 +149,52 @@ async function collectChangedFiles(cwd: string): Promise<string[]> {
 	return [...files];
 }
 
+async function collectChangedLines(cwd: string): Promise<Map<string, Set<number>>> {
+	const commands: string[][] = [
+		["diff", "-U0", "--diff-filter=ACMRTUXB"],
+		["diff", "--cached", "-U0", "--diff-filter=ACMRTUXB"],
+	];
+	const combined = new Map<string, Set<number>>();
+
+	for (const args of commands) {
+		const result = await execCommand("git", args, cwd);
+		if (result.code !== 0 || result.stdout.length === 0) {
+			continue;
+		}
+		const parsed = parseChangedLinesFromUnifiedDiff(result.stdout);
+		for (const [file, lines] of parsed) {
+			if (!combined.has(file)) {
+				combined.set(file, new Set<number>());
+			}
+			const target = combined.get(file)!;
+			for (const lineNo of lines) {
+				target.add(lineNo);
+			}
+		}
+	}
+
+	return combined;
+}
+
+async function collectUntrackedFiles(cwd: string): Promise<Set<string>> {
+	const result = await execCommand("git", ["ls-files", "--others", "--exclude-standard"], cwd);
+	if (result.code !== 0 || result.stdout.length === 0) {
+		return new Set<string>();
+	}
+	return new Set(
+		result.stdout
+			.split("\n")
+			.map((line) => line.trim())
+			.filter((file) => file.length > 0 && file !== ".git" && !file.startsWith(".git/")),
+	);
+}
+
 async function isGitRepo(cwd: string): Promise<boolean> {
 	const result = await execCommand("git", ["rev-parse", "--is-inside-work-tree"], cwd);
 	return result.code === 0 && result.stdout.trim() === "true";
 }
 
-export async function applyTaskStyleToChangedFiles(cwd: string): Promise<TaskStyleResult> {
+export async function applyTaskStyleToChangedFiles(cwd: string, expectedFiles?: string[]): Promise<TaskStyleResult> {
 	const mode = resolveTaskStyleMode();
 	if (mode === "off") {
 		return {
@@ -95,11 +216,24 @@ export async function applyTaskStyleToChangedFiles(cwd: string): Promise<TaskSty
 		};
 	}
 
-	const changedFiles = await collectChangedFiles(cwd);
+	const candidateFiles = await collectCandidateFiles(cwd);
+	const changedLinesByFile = await collectChangedLines(cwd);
+	const untrackedFiles = await collectUntrackedFiles(cwd);
+	const expectedMode = expectedFiles !== undefined;
+	const expectedSet = new Set(
+		(expectedFiles ?? [])
+			.map((file) => file.trim().replace(/^\.\//, ""))
+			.filter((file) => file.length > 0 && file !== ".git" && !file.startsWith(".git/")),
+	);
+	const filesToProcess = expectedMode ? candidateFiles.filter((file) => expectedSet.has(file)) : candidateFiles;
 	let styledFiles = 0;
 	let skippedFiles = 0;
 
-	for (const relativePath of changedFiles) {
+	for (const relativePath of filesToProcess) {
+		if (relativePath === ".git" || relativePath.startsWith(".git/")) {
+			skippedFiles++;
+			continue;
+		}
 		const absolutePath = resolve(cwd, relativePath);
 		try {
 			const fileStat = await stat(absolutePath);
@@ -112,7 +246,15 @@ export async function applyTaskStyleToChangedFiles(cwd: string): Promise<TaskSty
 				skippedFiles++;
 				continue;
 			}
-			const styled = applyBetweenLinesStyle(content);
+			const changedLines = changedLinesByFile.get(relativePath);
+			const isNewFile = untrackedFiles.has(relativePath);
+			const effectiveChangedLines = isNewFile
+				? new Set<number>(Array.from({ length: getLineEncoding(content).lines.length }, (_, idx) => idx + 1))
+				: changedLines;
+			const styled =
+				effectiveChangedLines && effectiveChangedLines.size > 0
+					? applyChangedFileStyle(content, effectiveChangedLines)
+					: applyUnchangedFileStyle(content);
 			if (styled !== content) {
 				await writeFile(absolutePath, styled, "utf8");
 				styledFiles++;
@@ -125,7 +267,7 @@ export async function applyTaskStyleToChangedFiles(cwd: string): Promise<TaskSty
 	return {
 		enabled: true,
 		mode,
-		scannedFiles: changedFiles.length,
+		scannedFiles: filesToProcess.length,
 		styledFiles,
 		skippedFiles,
 	};

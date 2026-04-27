@@ -4,7 +4,7 @@
 
 import { execSync } from "node:child_process";
 import { existsSync, readFileSync, statSync } from "node:fs";
-import { resolve, extname } from "node:path";
+import { resolve } from "node:path";
 import { getDocsPath, getExamplesPath, getReadmePath } from "../config.js";
 import { formatSkillsForPrompt, type Skill } from "./skills.js";
 
@@ -15,184 +15,6 @@ const STOP_WORDS = new Set([
 	"than", "some", "more", "other", "only", "just", "like", "such", "make", "made",
 	"does", "doing", "being",
 ]);
-
-export interface FileStyleInfo {
-	indent: "tabs" | "2-space" | "4-space" | "8-space" | "mixed" | "unknown";
-	quotes: "single" | "double" | "mixed" | "unknown";
-	semicolons: "yes" | "no" | "mixed" | "unknown";
-	trailingCommas: "yes" | "no" | "unknown";
-	lineEnding: "lf" | "crlf" | "mixed" | "unknown";
-	finalNewline: "yes" | "no" | "unknown";
-	maxLineLength: number | null;
-	confidence: number;
-	summary: string;
-}
-
-const MAX_STYLE_FILE_SIZE = 1_000_000;
-const MAX_ANALYZED_LINES = 300;
-
-const TEXT_EXTENSIONS = new Set([
-	".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs",
-	".py", ".go", ".rs", ".java", ".kt", ".scala",
-	".dart", ".rb", ".php", ".swift", ".cs",
-	".c", ".cc", ".cpp", ".h", ".hpp",
-	".vue", ".svelte", ".sh", ".bash", ".zsh",
-	".json", ".md", ".yml", ".yaml", ".css", ".scss",
-	".html", ".xml",
-]);
-
-function isProbablyTextFile(path: string): boolean {
-	return TEXT_EXTENSIONS.has(extname(path).toLowerCase());
-}
-
-function detectLineEnding(content: string): FileStyleInfo["lineEnding"] {
-	const crlf = (content.match(/\r\n/g) || []).length;
-	const lf = (content.match(/(?<!\r)\n/g) || []).length;
-
-	if (crlf === 0 && lf === 0) return "unknown";
-	if (crlf > 0 && lf > 0) return "mixed";
-	return crlf > 0 ? "crlf" : "lf";
-}
-
-function detectIndent(lines: string[]): FileStyleInfo["indent"] {
-	let tabs = 0;
-	let spaces = 0;
-	const widths = new Map<number, number>();
-
-	for (const line of lines) {
-		if (!line.trim()) continue;
-
-		const tabMatch = line.match(/^\t+/);
-		const spaceMatch = line.match(/^ +/);
-
-		if (tabMatch) {
-			tabs++;
-		} else if (spaceMatch) {
-			spaces++;
-			const width = spaceMatch[0].length;
-
-			for (const size of [2, 4, 8]) {
-				if (width % size === 0) {
-					widths.set(size, (widths.get(size) || 0) + 1);
-				}
-			}
-		}
-	}
-
-	if (tabs === 0 && spaces === 0) return "unknown";
-	if (tabs > 0 && spaces > 0) return "mixed";
-	if (tabs > spaces) return "tabs";
-
-	let bestSize: 2 | 4 | 8 = 2;
-	let bestCount = 0;
-
-	for (const [size, count] of widths) {
-		if (count > bestCount) {
-			bestSize = size as 2 | 4 | 8;
-			bestCount = count;
-		}
-	}
-
-	return `${bestSize}-space`;
-}
-
-function stripCommentsAndStringsLightly(line: string): string {
-	// Lightweight heuristic only.
-	// This avoids counting obvious comments too heavily,
-	// but it is not a full parser.
-	return line
-		.replace(/\/\/.*$/, "")
-		.replace(/#.*$/, "")
-		.replace(/\/\*.*?\*\//g, "");
-}
-
-function detectQuotes(content: string): FileStyleInfo["quotes"] {
-	const single = (content.match(/'([^'\\]|\\.)*'/g) || []).length;
-	const double = (content.match(/"([^"\\]|\\.)*"/g) || []).length;
-
-	if (single === 0 && double === 0) return "unknown";
-	if (single > double * 1.5) return "single";
-	if (double > single * 1.5) return "double";
-	return "mixed";
-}
-
-function detectSemicolons(lines: string[]): FileStyleInfo["semicolons"] {
-	let codeLines = 0;
-	let semiLines = 0;
-
-	for (const line of lines) {
-		const clean = stripCommentsAndStringsLightly(line).trim();
-
-		if (!clean) continue;
-		if (
-			clean === "{" ||
-			clean === "}" ||
-			clean.endsWith("{") ||
-			clean.endsWith(",")
-		) {
-			continue;
-		}
-
-		codeLines++;
-
-		if (clean.endsWith(";")) {
-			semiLines++;
-		}
-	}
-
-	if (codeLines === 0) return "unknown";
-
-	const ratio = semiLines / codeLines;
-
-	if (ratio > 0.7) return "yes";
-	if (ratio < 0.2) return "no";
-	return "mixed";
-}
-
-function detectTrailingCommas(content: string): FileStyleInfo["trailingCommas"] {
-	const hasTrailingComma = /,\s*[\r\n]+\s*[\]\)}]/.test(content);
-	const hasMultilineCollection = /[\[\({][\s\S]*?[\r\n][\s\S]*?[\]\)}]/.test(content);
-
-	if (hasTrailingComma) return "yes";
-	if (hasMultilineCollection) return "no";
-	return "unknown";
-}
-
-function detectMaxLineLength(lines: string[]): number | null {
-	const meaningful = lines
-		.map((line) => line.replace(/\r$/, ""))
-		.filter((line) => line.trim().length > 0);
-
-	if (meaningful.length === 0) return null;
-
-	return Math.max(...meaningful.map((line) => line.length));
-}
-
-function calculateConfidence(style: Omit<FileStyleInfo, "confidence" | "summary">): number {
-	let score = 0;
-	let total = 0;
-
-	for (const key of [
-		"indent",
-		"quotes",
-		"semicolons",
-		"trailingCommas",
-		"lineEnding",
-		"finalNewline",
-	] as const) {
-		total++;
-
-		const value = style[key];
-
-		if (value !== "unknown" && value !== "mixed") {
-			score++;
-		} else if (value === "mixed") {
-			score += 0.5;
-		}
-	}
-
-	return Number((score / total).toFixed(2));
-}
 
 function countAcceptanceCriteria(taskText: string): number {
 	const section = taskText.match(
@@ -206,152 +28,196 @@ function countAcceptanceCriteria(taskText: string): number {
 	return bullets ? bullets.length : 0;
 }
 
+function extractAcceptanceCriteria(taskText: string): string[] {
+	const section = taskText.match(
+		/(?:acceptance\s+criteria|requirements|tasks?|todo):?\s*\n([\s\S]*?)(?:\n\n|\n(?=[A-Z])|\n(?=##)|$)/i,
+	);
+	const block = section ? section[1] : taskText;
+	const bullets = block.match(/^\s*(?:[-*•+]|\d+[.)])\s+.+$/gm);
+	if (!bullets) return [];
+	return bullets.slice(0, 20).map((b) => b.replace(/^\s*(?:[-*•+]|\d+[.)])\s+/, "").trim());
+}
+
 function extractNamedFiles(taskText: string): string[] {
 	const matches = taskText.match(/`([^`]+\.[a-zA-Z0-9]{1,6})`/g) || [];
 	return [...new Set(matches.map(f => f.replace(/`/g, '').trim()))];
 }
 
-export function detectFileStyle(cwd: string, relPath: string): FileStyleInfo | null {
+function detectFileStyle(cwd: string, relPath: string): string | null {
 	try {
-		const fullPath = resolve(cwd, relPath);
-
-		if (!existsSync(fullPath)) return null;
-
-		const fileStat = statSync(fullPath);
-
-		if (!fileStat.isFile()) return null;
-		if (fileStat.size === 0) return null;
-		if (fileStat.size > MAX_STYLE_FILE_SIZE) return null;
-		if (!isProbablyTextFile(relPath)) return null;
-
-		const content = readFileSync(fullPath, "utf8");
-
-		if (content.includes("\u0000")) return null;
-
-		const lines = content
-			.split(/\n/)
-			.slice(0, MAX_ANALYZED_LINES);
-
-		const styleWithoutSummary = {
-			indent: detectIndent(lines),
-			quotes: detectQuotes(content),
-			semicolons: detectSemicolons(lines),
-			trailingCommas: detectTrailingCommas(content),
-			lineEnding: detectLineEnding(content),
-			finalNewline: content.endsWith("\n") ? "yes" : "no",
-			maxLineLength: detectMaxLineLength(lines),
-		} satisfies Omit<FileStyleInfo, "confidence" | "summary">;
-
-		const confidence = calculateConfidence(styleWithoutSummary);
-
-		const summary = [
-			`indent=${styleWithoutSummary.indent}`,
-			`quotes=${styleWithoutSummary.quotes}`,
-			`semicolons=${styleWithoutSummary.semicolons}`,
-			`trailing-commas=${styleWithoutSummary.trailingCommas}`,
-			`line-ending=${styleWithoutSummary.lineEnding}`,
-			`final-newline=${styleWithoutSummary.finalNewline}`,
-			styleWithoutSummary.maxLineLength
-				? `max-line-length=${styleWithoutSummary.maxLineLength}`
-				: `max-line-length=unknown`,
-			`confidence=${confidence}`,
-		].join(", ");
-
-		return {
-			...styleWithoutSummary,
-			confidence,
-			summary,
-		};
-	} catch {
-		return null;
-	}
+		const full = resolve(cwd, relPath);
+		if (!existsSync(full)) return null;
+		const stat = statSync(full);
+		if (!stat.isFile() || stat.size > 1_000_000) return null;
+		const content = readFileSync(full, "utf8");
+		const lines = content.split("\n").slice(0, 40);
+		if (lines.length === 0) return null;
+		let usesTabs = 0, usesSpaces = 0;
+		const spaceWidths = new Map<number, number>();
+		for (const line of lines) {
+			if (/^\t/.test(line)) usesTabs++;
+			else if (/^ +/.test(line)) {
+				usesSpaces++;
+				const m = line.match(/^( +)/);
+				if (m) { const w = m[1].length; if (w === 2 || w === 4 || w === 8) spaceWidths.set(w, (spaceWidths.get(w) || 0) + 1); }
+			}
+		}
+		let indent = "unknown";
+		if (usesTabs > usesSpaces) indent = "tabs";
+		else if (usesSpaces > 0) {
+			let maxW = 2, maxC = 0;
+			for (const [w, c] of spaceWidths) { if (c > maxC) { maxC = c; maxW = w; } }
+			indent = `${maxW}-space`;
+		}
+		const single = (content.match(/'/g) || []).length;
+		const double = (content.match(/"/g) || []).length;
+		const quotes = single > double * 1.5 ? "single" : double > single * 1.5 ? "double" : "mixed";
+		let codeLines = 0, semiLines = 0;
+		for (const line of lines) {
+			const t = line.trim();
+			if (!t || t.startsWith("//") || t.startsWith("#") || t.startsWith("*")) continue;
+			codeLines++;
+			if (t.endsWith(";")) semiLines++;
+		}
+		const semis = codeLines === 0 ? "unknown" : semiLines / codeLines > 0.3 ? "yes" : "no";
+		const trailing = /,\s*[\n\r]\s*[)\]}]/.test(content) ? "yes" : "no";
+		return `indent=${indent}, quotes=${quotes}, semicolons=${semis}, trailing-commas=${trailing}`;
+	} catch { return null; }
 }
 
 function shellEscape(s: string): string {
 	return s.replace(/[\\"`$]/g, "\\$&");
 }
 
+
+function collectTaskCandidateFiles(taskText: string, cwd: string): {
+	literalPaths: string[];
+	filenameHits: Map<string, Set<string>>;
+	fileHits: Map<string, Set<string>>;
+} {
+	const keywords = new Set<string>();
+	const backticks = taskText.match(/`([^`]{2,80})`/g) || [];
+	for (const b of backticks) {
+		const t = b.slice(1, -1).trim();
+		if (t.length >= 2 && t.length <= 80) keywords.add(t);
+	}
+	const camel = taskText.match(/\b[A-Za-z][a-z]+(?:[A-Z][a-zA-Z0-9]*)+\b/g) || [];
+	for (const c of camel) keywords.add(c);
+	const snake = taskText.match(/\b[a-z][a-z0-9]*(?:_[a-z0-9]+)+\b/g) || [];
+	for (const s of snake) keywords.add(s);
+	const kebab = taskText.match(/\b[a-z][a-z0-9]*(?:-[a-z0-9]+)+\b/g) || [];
+	for (const k of kebab) keywords.add(k);
+	const scream = taskText.match(/\b[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+\b/g) || [];
+	for (const s of scream) keywords.add(s);
+	const pathLike =
+		taskText.match(/(?:^|[\s"'`(\[])((?:\.\.?\/|\/)?(?:[\w.-]+\/)+[\w.-]+\.[a-zA-Z]{1,6})(?=$|[\s"'`)\],:;.])/g) || [];
+	const paths = new Set<string>();
+	for (const p of pathLike) {
+		const cleaned = p.trim().replace(/^[\s"'`(\[]/, "").replace(/^\.\//, "");
+		paths.add(cleaned);
+		keywords.add(cleaned);
+	}
+	for (const b of backticks) {
+		const inner = b.slice(1, -1).trim();
+		if (/^[\w./-]+\.[a-zA-Z0-9]{1,6}$/.test(inner) && inner.length < 200) paths.add(inner.replace(/^\.\//, ""));
+	}
+	const filtered = [...keywords]
+		.filter((k) => k.length >= 3 && k.length <= 80)
+		.filter((k) => !/["']/.test(k))
+		.filter((k) => !STOP_WORDS.has(k.toLowerCase()))
+		.slice(0, 20);
+
+	const fileHits = new Map<string, Set<string>>();
+	const includeGlobs =
+		'--include="*.ts" --include="*.tsx" --include="*.js" --include="*.jsx" --include="*.mjs" --include="*.cjs" --include="*.py" --include="*.go" --include="*.rs" --include="*.java" --include="*.kt" --include="*.scala" --include="*.dart" --include="*.rb" --include="*.cs" --include="*.cpp" --include="*.c" --include="*.h" --include="*.hpp" --include="*.vue" --include="*.svelte" --include="*.css" --include="*.scss" --include="*.html" --include="*.json" --include="*.yaml" --include="*.yml" --include="*.toml" --include="*.md"';
+	for (const kw of filtered) {
+		try {
+			const escaped = shellEscape(kw);
+			const result = execSync(
+				`grep -rlF "${escaped}" ${includeGlobs} . 2>/dev/null | grep -v node_modules | grep -v '/\\.git/' | grep -v '/dist/' | grep -v '/build/' | grep -v '/out/' | grep -v '/\\.next/' | grep -v '/target/' | head -12`,
+				{ cwd, timeout: 3000, encoding: "utf-8", maxBuffer: 2 * 1024 * 1024 },
+			).trim();
+			if (result) {
+				for (const line of result.split("\n")) {
+					const file = line.trim().replace(/^\.\//, "");
+					if (!file) continue;
+					if (!fileHits.has(file)) fileHits.set(file, new Set());
+					fileHits.get(file)!.add(kw);
+				}
+			}
+		} catch {}
+	}
+
+	const filenameHits = new Map<string, Set<string>>();
+	for (const kw of filtered) {
+		if (kw.includes("/") || kw.includes(" ") || kw.length > 40) continue;
+		try {
+			const nameResult = execSync(
+				`find . -type f -iname "*${shellEscape(kw)}*" -not -path "*/node_modules/*" -not -path "*/.git/*" -not -path "*/dist/*" -not -path "*/build/*" -not -path "*/.next/*" | head -10`,
+				{ cwd, timeout: 2000, encoding: "utf-8", maxBuffer: 1024 * 1024 },
+			).trim();
+			if (nameResult) {
+				for (const line of nameResult.split("\n")) {
+					const file = line.trim().replace(/^\.\//, "");
+					if (!file) continue;
+					if (!filenameHits.has(file)) filenameHits.set(file, new Set());
+					filenameHits.get(file)!.add(kw);
+					if (!fileHits.has(file)) fileHits.set(file, new Set());
+					fileHits.get(file)!.add(`${kw} (filename)`);
+				}
+			}
+		} catch {}
+	}
+
+	const literalPaths: string[] = [];
+	for (const p of paths) {
+		try {
+			const full = resolve(cwd, p);
+			if (existsSync(full) && statSync(full).isFile()) literalPaths.push(p.replace(/^\.\//, ""));
+		} catch {}
+	}
+
+	return { literalPaths, filenameHits, fileHits };
+}
+
+export function extractExpectedTaskFiles(taskText: string, cwd: string, maxFiles = 20): string[] {
+	try {
+		const { literalPaths, filenameHits, fileHits } = collectTaskCandidateFiles(taskText, cwd);
+		const sorted = [...fileHits.entries()].sort((a, b) => b[1].size - a[1].size);
+		const sortedFilename = [...filenameHits.entries()].sort((a, b) => b[1].size - a[1].size);
+		const out: string[] = [];
+		const seen = new Set<string>();
+
+		const pushIfNew = (path: string) => {
+			const normalized = path.replace(/^\.\//, "");
+			if (!normalized || normalized === ".git" || normalized.startsWith(".git/")) return;
+			if (seen.has(normalized)) return;
+			seen.add(normalized);
+			out.push(normalized);
+		};
+
+		for (const p of literalPaths) {
+			if (out.length >= maxFiles) break;
+			pushIfNew(p);
+		}
+		for (const [file] of sortedFilename) {
+			if (out.length >= maxFiles) break;
+			pushIfNew(file);
+		}
+		for (const [file] of sorted) {
+			if (out.length >= maxFiles) break;
+			pushIfNew(file);
+		}
+
+		return out.slice(0, maxFiles);
+	} catch {
+		return [];
+	}
+}
+
 function buildTaskDiscoverySection(taskText: string, cwd: string): string {
 	try {
-		const keywords = new Set<string>();
-		const backticks = taskText.match(/`([^`]{2,80})`/g) || [];
-		for (const b of backticks) { const t = b.slice(1, -1).trim(); if (t.length >= 2 && t.length <= 80) keywords.add(t); }
-		const camel = taskText.match(/\b[A-Za-z][a-z]+(?:[A-Z][a-zA-Z0-9]*)+\b/g) || [];
-		for (const c of camel) keywords.add(c);
-		const snake = taskText.match(/\b[a-z][a-z0-9]*(?:_[a-z0-9]+)+\b/g) || [];
-		for (const s of snake) keywords.add(s);
-		const kebab = taskText.match(/\b[a-z][a-z0-9]*(?:-[a-z0-9]+)+\b/g) || [];
-		for (const k of kebab) keywords.add(k);
-		const scream = taskText.match(/\b[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+\b/g) || [];
-		for (const s of scream) keywords.add(s);
-		const pathLike = taskText.match(/(?:^|[\s"'`(\[])((?:\.\.?\/|\/)?(?:[\w.-]+\/)+[\w.-]+\.[a-zA-Z]{1,6})(?=$|[\s"'`)\],:;.])/g) || [];
-		const paths = new Set<string>();
-		for (const p of pathLike) {
-			const cleaned = p.trim().replace(/^[\s"'`(\[]/, "").replace(/^\.\//, "");
-			paths.add(cleaned);
-			keywords.add(cleaned);
-		}
-		for (const b of backticks) {
-			const inner = b.slice(1, -1).trim();
-			if (/^[\w./-]+\.[a-zA-Z0-9]{1,6}$/.test(inner) && inner.length < 200) paths.add(inner.replace(/^\.\//, ""));
-		}
-		const filtered = [...keywords]
-			.filter(k => k.length >= 3 && k.length <= 80)
-			.filter(k => !/["']/.test(k))
-			.filter(k => !STOP_WORDS.has(k.toLowerCase()))
-			.slice(0, 20);
-		if (filtered.length === 0 && paths.size === 0) return "";
-
-		const fileHits = new Map<string, Set<string>>();
-		const includeGlobs =
-			'--include="*.ts" --include="*.tsx" --include="*.js" --include="*.jsx" --include="*.mjs" --include="*.cjs" --include="*.py" --include="*.go" --include="*.rs" --include="*.java" --include="*.kt" --include="*.scala" --include="*.dart" --include="*.rb" --include="*.cs" --include="*.cpp" --include="*.c" --include="*.h" --include="*.hpp" --include="*.vue" --include="*.svelte" --include="*.css" --include="*.scss" --include="*.html" --include="*.json" --include="*.yaml" --include="*.yml" --include="*.toml" --include="*.md"';
-		for (const kw of filtered) {
-			try {
-				const escaped = shellEscape(kw);
-				const result = execSync(
-					`grep -rlF "${escaped}" ${includeGlobs} . 2>/dev/null | grep -v node_modules | grep -v '/\\.git/' | grep -v '/dist/' | grep -v '/build/' | grep -v '/out/' | grep -v '/\\.next/' | grep -v '/target/' | head -12`,
-					{ cwd, timeout: 3000, encoding: "utf-8", maxBuffer: 2 * 1024 * 1024 },
-				).trim();
-				if (result) {
-					for (const line of result.split("\n")) {
-						const file = line.trim().replace(/^\.\//, "");
-						if (!file) continue;
-						if (!fileHits.has(file)) fileHits.set(file, new Set());
-						fileHits.get(file)!.add(kw);
-					}
-				}
-			} catch { }
-		}
-
-		const filenameHits = new Map<string, Set<string>>();
-		for (const kw of filtered) {
-			if (kw.includes("/") || kw.includes(" ") || kw.length > 40) continue;
-			try {
-				const nameResult = execSync(
-					`find . -type f -iname "*${shellEscape(kw)}*" -not -path "*/node_modules/*" -not -path "*/.git/*" -not -path "*/dist/*" -not -path "*/build/*" -not -path "*/.next/*" | head -10`,
-					{ cwd, timeout: 2000, encoding: "utf-8", maxBuffer: 1024 * 1024 },
-				).trim();
-				if (nameResult) {
-					for (const line of nameResult.split("\n")) {
-						const file = line.trim().replace(/^\.\//, "");
-						if (!file) continue;
-						if (!filenameHits.has(file)) filenameHits.set(file, new Set());
-						filenameHits.get(file)!.add(kw);
-						if (!fileHits.has(file)) fileHits.set(file, new Set());
-						fileHits.get(file)!.add(kw + " (filename)");
-					}
-				}
-			} catch { }
-		}
-
-		const literalPaths: string[] = [];
-		for (const p of paths) {
-			try {
-				const full = resolve(cwd, p);
-				if (existsSync(full) && statSync(full).isFile()) literalPaths.push(p.replace(/^\.\//, ""));
-			} catch { }
-		}
-
+		const { literalPaths, filenameHits, fileHits } = collectTaskCandidateFiles(taskText, cwd);
 		if (fileHits.size === 0 && literalPaths.length === 0) return "";
 
 		const sorted = [...fileHits.entries()].sort((a, b) => b[1].size - a[1].size).slice(0, 15);
@@ -407,48 +273,6 @@ function buildTaskDiscoverySection(taskText: string, cwd: string): string {
 			}
 		}
 
-		// If the task names a bare filename (e.g. `foo.py`) that doesn't already exist,
-		// provide a deterministic, non-root placement hint based on the primary surface.
-		const namedFiles = extractNamedFiles(taskText);
-		const newBareFiles = namedFiles
-			.filter((file) => !file.includes("/") && !file.includes("\\"))
-			.filter((file) => {
-				try {
-					return !existsSync(resolve(cwd, file));
-				} catch {
-					return true;
-				}
-			});
-		if (newBareFiles.length > 0) {
-			let baseDir = "";
-			if (topFile && topFile.includes("/")) {
-				baseDir = topFile.substring(0, topFile.lastIndexOf("/"));
-			}
-			if (!baseDir) {
-				const fallbacks = ["src", "app", "lib", "scripts", "packages"];
-				for (const candidate of fallbacks) {
-					try {
-						const stat = statSync(resolve(cwd, candidate));
-						if (stat.isDirectory()) {
-							baseDir = candidate;
-							break;
-						}
-					} catch {
-						// ignore
-					}
-				}
-			}
-
-			if (baseDir && baseDir !== ".") {
-				sections.push("\nNEW FILE PLACEMENT hint (bare filenames only):");
-				for (const file of newBareFiles.slice(0, 8)) {
-					sections.push(`- ${file} -> ${baseDir}/${file}`);
-				}
-				sections.push("Use these paths for new files; do not place bare filenames at repo root.");
-			}
-		}
-
-
 		const criteriaCount = countAcceptanceCriteria(taskText);
 		if (criteriaCount > 0) {
 			sections.push(`\nThis task has ${criteriaCount} acceptance criteria.`);
@@ -471,10 +295,45 @@ function buildTaskDiscoverySection(taskText: string, cwd: string): string {
 		}
 		sections.push("\nAdaptive anti-stall cutoff: in small-task mode, edit after 2 discovery/search steps; in multi-file mode, edit after 3 steps.");
 
-		if (namedFiles.length > 0) {
-			sections.push(`\nFiles named in the task text: ${namedFiles.map((f) => `\`${f}\``).join(", ")}.`);
-			sections.push("Named files are highest-priority signals: inspect first, then edit only when acceptance criteria or required wiring map to them.");
+		const criteria = extractAcceptanceCriteria(taskText);
+		if (criteria.length > 0) {
+			sections.push("\nACCEPTANCE CRITERIA CHECKLIST (each must map to at least one edit):");
+			for (let i = 0; i < criteria.length; i++) {
+				sections.push(`  [ ] ${i + 1}. ${criteria[i]}`);
+			}
+			sections.push("Do NOT stop until every checkbox above has a corresponding edit.");
 		}
+
+		const namedFiles = extractNamedFiles(taskText);
+		if (namedFiles.length > 0) {
+			sections.push(`\nFiles named in the task text: ${namedFiles.map(f => `\`${f}\``).join(", ")}.`);
+			sections.push("Named files are highest-priority signals: inspect first, then edit only when acceptance criteria or required wiring map to them.");
+			sections.push("NAMED FILE RULE: if a named file has not been touched and an acceptance criterion references it, you MUST address it before stopping.");
+		}
+
+		const siblingDirs = new Set<string>();
+		for (const p of literalPaths.slice(0, 4)) {
+			const dir = p.includes("/") ? p.substring(0, p.lastIndexOf("/")) : ".";
+			if (dir && dir !== ".") siblingDirs.add(dir);
+		}
+		for (const [f] of sorted.slice(0, 3)) {
+			const dir = f.includes("/") ? f.substring(0, f.lastIndexOf("/")) : ".";
+			if (dir && dir !== ".") siblingDirs.add(dir);
+		}
+		if (siblingDirs.size > 0) {
+			const siblingEntries: string[] = [];
+			for (const dir of [...siblingDirs].slice(0, 3)) {
+				try {
+					const ls = execSync(`ls "${dir}" 2>/dev/null | head -15`, { cwd, timeout: 2000, encoding: "utf-8" }).trim();
+					if (ls) siblingEntries.push(`${dir}/: ${ls.split("\n").join(", ")}`);
+				} catch { }
+			}
+			if (siblingEntries.length > 0) {
+				sections.push("\nSIBLING FILES (check for related files that may need edits):");
+				for (const entry of siblingEntries) sections.push(`  ${entry}`);
+			}
+		}
+
 		sections.push("Priority ladder for target selection: (1) explicit acceptance-criteria signal, (2) named file signal, (3) nearest sibling logic/wiring signal.");
 		sections.push("Literality: when several edits would satisfy the task, prefer the most boring continuation of nearby code (same patterns, naming, and ordering as neighbors).");
 
@@ -510,7 +369,7 @@ For small targeted bug-fix tasks (1-2 acceptance criteria, no "rewrite" wording)
 
 Volume only helps when the reference *also* has volume. Don't randomly delete unrelated files — only delete sections plausibly replaced by the task.
 - Read a file before editing that file.
-- Implement only what is explicitly requested plus minimally required adjacent wiring.
+- Implement all acceptance criteria plus minimally required adjacent wiring. Breadth over depth — touching 4 out of 5 required files scores far better than perfecting 1 out of 5.
 - If instructions conflict, obey this order: explicit task requirements -> hard constraints -> smallest accepted edit set.
 - **Non-empty patch (best effort):** If the task asks you to implement, fix, add, or change code/config behavior, you should finish with **at least one successful** \`edit\` or \`write\` that persists to disk. If blocked by tool failures, permissions, or hard session timeouts, report the blocker explicitly instead of fabricating edits. (Exception: the user explicitly asks for explanation only and no code changes.)
 - Literality rule: choose the most boring, literal continuation of nearby code patterns.
@@ -536,7 +395,7 @@ Flow: read primary file -> minimal in-place edit -> quick check for explicit sec
 ### Mode B (multi-file)
 Use otherwise.
 
-Flow: map criteria to files -> breadth first (one correct edit per required file) -> do NOT stop until every criterion has a corresponding edit -> polish only if criteria remain unmet.
+Flow: map criteria to files -> breadth first (one correct edit per required file) -> do NOT stop until every criterion has a corresponding edit -> cover ALL named files -> polish only if criteria remain unmet.
 
 ### Mode C (single-surface, many bullets)
 Use when LIKELY RELEVANT FILES shows one path with clearly dominant keyword matches (see injected KEYWORD CONCENTRATION), even if acceptance criteria count is high.
@@ -595,7 +454,8 @@ Switch to Mode B immediately if that check reveals an explicit second required f
 
 Before stopping:
 - **Patch is non-empty when feasible:** at least one file in the workspace has changed from your successful tool calls (verify mentally: you did not end after only failed edits or reads), unless a concrete blocker or hard timeout prevented a safe landed change.
-- coverage is requirement-first, not file-count-first: expand to another file only when an explicit criterion, named path, or required nearby wiring is still unmet
+- Completeness cross-check: walk through each acceptance criterion one-by-one and verify you have a corresponding edit. If any criterion is unaddressed, go back and address it now.
+- Named-file cross-check: for every file mentioned in backticks in the task, verify it was inspected and edited if relevant. Missing a named file the reference covers is lost score.
 - numeric sanity check: compare acceptance criteria count vs successful edited files; if edited files < criteria count, assume likely under-coverage and re-check each criterion before stopping
 - each acceptance criterion maps to an implemented edit
 - if edited files < criteria count, re-check for missed criteria before stopping
@@ -609,30 +469,35 @@ Then stop immediately.
 ## Anti-stall trigger
 
 If no successful file mutation has landed after initial discovery and one read pass:
-- immediately apply the highest-probability minimal valid edit
+- immediately apply the highest-probability valid edit — do not explore further
 - prefer in-place changes near existing sibling logic
-- avoid additional exploration loops
-- a partial or imperfect **successful** edit always outscores an empty diff; when implementation was requested, attempt to land one before timeout, and if impossible, report the blocker clearly
-- "Non-empty" means the tool reported success — if \`edit\` or \`write\` failed, you have not satisfied this yet; **read** and retry until one succeeds or you exhaust reasonable anchors
+- an imperfect **successful** edit always outscores an empty diff; empty diff = guaranteed loss
+- "Non-empty" means the tool reported success — if \`edit\` or \`write\` failed, you have not satisfied this yet; **read** and retry until one succeeds
+- if your primary target file edits keep failing, switch to a different file from the task
 
-If \`edit\` repeatedly errors:
-- treat that as a **stale or non-matching anchor**, not a signal to stop — refresh with \`read\` and fix \`oldText\` before any other strategy
+If \`edit\` repeatedly errors (3+ failures on the same file):
+- **STOP** trying that file — move to the next acceptance criterion or named file
+- refresh with \`read\` on the NEW target file and apply an edit there
+- producing edits in 3 out of 5 required files scores far better than 0 edits after failing on file 1
+- as absolute last resort, use \`write\` to create a new file that addresses an acceptance criterion
 
 ---
 
 `;
 
-const TAU_SCORING_PREAMBLE_FOR_CUSTOM_BRANCH = `You are an expert coding assistant (Diff Overlap Optimizer) operating inside pi, a coding agent harness. You help users by reading files, executing commands, editing code, and writing new files.
+const TAU_SCORING_PREAMBLE_FOR_CUSTOM_BRANCH = `You are an expert coding assistant operating inside pi, a coding agent harness. You help users by reading files, executing commands, editing code, and writing new files.
 Your diff is scored against a hidden reference diff for the same task.
-Harness details vary, but overlap scoring rewards matching changed lines/ordering and penalizes surplus edits.
-No semantic bonus. No tests in scoring.
-**Empty patches (zero files changed) score worst** when the task asks for any implementation — treat a non-empty diff as a first-class objective alongside correctness.
+Scoring: similarity = matched_lines / max(your_lines, reference_lines).
+Each reference line you match earns score. Lines the reference has but you miss are lost score.
+**Empty patches (zero files changed) guarantee a loss.** You MUST land at least one successful edit.
+Missing a required file or feature that the reference covers costs matched lines. Breadth beats depth.
 
-# Diff Overlap Optimizer
+# Scoring Guide
 
-Your diff is scored against a hidden reference diff for the same task.
-Harness details vary, but overlap scoring rewards matching changed lines/ordering and penalizes surplus edits.
-No semantic bonus. No tests in scoring.
+Your diff is compared line-by-line against a hidden reference diff.
+Covering MORE of the reference files and criteria = MORE matched lines = higher score.
+Stopping early with fewer files edited is the most common failure mode.
+Touching 4 of 5 target files scores far better than perfecting 1 of 5.
 
 ## Hard constraints
 
@@ -641,7 +506,7 @@ No semantic bonus. No tests in scoring.
 - Do not install packages (\`npm install\`, \`pnpm add\`, \`yarn add\`, etc.) unless the task explicitly names a dependency to add. Prefer Unicode, inline SVG, or packages already in the repo — installs burn time and often fail offline.
 - Keep discovery short, then mostly read/edit.
 - Read a file before editing that file.
-- Implement only what is explicitly requested plus minimally required adjacent wiring.
+- Implement all acceptance criteria plus minimally required adjacent wiring. Breadth over depth — touching 4 out of 5 required files scores far better than perfecting 1 out of 5.
 - If instructions conflict, obey this order: explicit task requirements -> hard constraints -> smallest accepted edit set.
 - **Non-empty patch (best effort):** If the task asks you to implement, fix, add, or change code/config behavior, you should finish with **at least one successful** \`edit\` or \`write\` that persists to disk. If blocked by tool failures, permissions, or hard session timeouts, report the blocker explicitly instead of fabricating edits. (Exception: the user explicitly asks for explanation only and no code changes.)
 - Literality rule: choose the most boring, literal continuation of nearby code patterns.
@@ -667,7 +532,7 @@ Flow: read primary file -> minimal in-place edit -> quick check for explicit sec
 ### Mode B (multi-file)
 Use otherwise.
 
-Flow: map criteria to files -> breadth first (one correct edit per required file) -> do NOT stop until every criterion has a corresponding edit -> polish only if criteria remain unmet.
+Flow: map criteria to files -> breadth first (one correct edit per required file) -> do NOT stop until every criterion has a corresponding edit -> cover ALL named files -> polish only if criteria remain unmet.
 
 ### Mode C (single-surface, many bullets)
 Use when LIKELY RELEVANT FILES shows one path with clearly dominant keyword matches (see injected KEYWORD CONCENTRATION), even if acceptance criteria count is high.
@@ -726,7 +591,8 @@ Switch to Mode B immediately if that check reveals an explicit second required f
 
 Before stopping:
 - **Patch is non-empty when feasible:** at least one file in the workspace has changed from your successful tool calls (verify mentally: you did not end after only failed edits or reads), unless a concrete blocker or hard timeout prevented a safe landed change.
-- coverage is requirement-first, not file-count-first: expand to another file only when an explicit criterion, named path, or required nearby wiring is still unmet
+- Completeness cross-check: walk through each acceptance criterion one-by-one and verify you have a corresponding edit. If any criterion is unaddressed, go back and address it now.
+- Named-file cross-check: for every file mentioned in backticks in the task, verify it was inspected and edited if relevant. Missing a named file the reference covers is lost score.
 - numeric sanity check: compare acceptance criteria count vs successful edited files; if edited files < criteria count, assume likely under-coverage and re-check each criterion before stopping
 - each acceptance criterion maps to an implemented edit
 - if edited files < criteria count, re-check for missed criteria before stopping
@@ -740,14 +606,17 @@ Then stop immediately.
 ## Anti-stall trigger
 
 If no successful file mutation has landed after initial discovery and one read pass:
-- immediately apply the highest-probability minimal valid edit
+- immediately apply the highest-probability valid edit — do not explore further
 - prefer in-place changes near existing sibling logic
-- avoid additional exploration loops
-- a partial or imperfect **successful** edit always outscores an empty diff; when implementation was requested, attempt to land one before timeout, and if impossible, report the blocker clearly
-- "Non-empty" means the tool reported success — if \`edit\` or \`write\` failed, you have not satisfied this yet; **read** and retry until one succeeds or you exhaust reasonable anchors
+- an imperfect **successful** edit always outscores an empty diff; empty diff = guaranteed loss
+- "Non-empty" means the tool reported success — if \`edit\` or \`write\` failed, you have not satisfied this yet; **read** and retry until one succeeds
+- if your primary target file edits keep failing, switch to a different file from the task
 
-If \`edit\` repeatedly errors:
-- treat that as a **stale or non-matching anchor**, not a signal to stop — refresh with \`read\` and fix \`oldText\` before any other strategy
+If \`edit\` repeatedly errors (3+ failures on the same file):
+- **STOP** trying that file — move to the next acceptance criterion or named file
+- refresh with \`read\` on the NEW target file and apply an edit there
+- producing edits in 3 out of 5 required files scores far better than 0 edits after failing on file 1
+- as absolute last resort, use \`write\` to create a new file that addresses an acceptance criterion
 
 ---
 

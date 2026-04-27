@@ -33,6 +33,7 @@ import { DefaultResourceLoader } from "./core/resource-loader.js";
 import type { CreateAgentSessionOptions } from "./core/sdk.js";
 import { SessionManager } from "./core/session-manager.js";
 import { SettingsManager } from "./core/settings-manager.js";
+import { extractExpectedTaskFiles } from "./core/system-prompt.js";
 import { applyTaskStyleToChangedFiles } from "./core/task-style.js";
 import { printTimings, resetTimings, time } from "./core/timings.js";
 import { allTools } from "./core/tools/index.js";
@@ -1001,11 +1002,14 @@ export async function main(args: string[]) {
 			initialImages,
 		});
 		if (solverLikePrintRun && exitCode === 0) {
-			const styleResult = await applyTaskStyleToChangedFiles(process.cwd());
+			const taskTextForExpectedFiles = [initialMessage, ...parsed.messages].filter(Boolean).join("\n\n");
+			const expectedFiles =
+				taskTextForExpectedFiles.length > 0 ? extractExpectedTaskFiles(taskTextForExpectedFiles, process.cwd(), 20) : [];
+			const styleResult = await applyTaskStyleToChangedFiles(process.cwd(), expectedFiles);
 			if (styleResult.enabled) {
 				console.error(
 					chalk.dim(
-						`Applied post-task style (${styleResult.mode}) to ${styleResult.styledFiles}/${styleResult.scannedFiles} changed files`,
+						`Applied post-task style (${styleResult.mode}) to ${styleResult.styledFiles}/${styleResult.scannedFiles} expected files`,
 					),
 				);
 			}
