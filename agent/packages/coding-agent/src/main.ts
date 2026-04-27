@@ -1004,7 +1004,7 @@ export async function main(args: string[]) {
 		if (solverLikePrintRun && exitCode === 0) {
 			const taskTextForExpectedFiles = [initialMessage, ...parsed.messages].filter(Boolean).join("\n\n");
 			const expectedFiles =
-				taskTextForExpectedFiles.length > 0 ? extractExpectedTaskFiles(taskTextForExpectedFiles, process.cwd(), 20) : [];
+				taskTextForExpectedFiles.length > 0 ? extractExpectedTaskFiles(taskTextForExpectedFiles, process.cwd(), 15) : [];
 			const styleResult = await applyTaskStyleToChangedFiles(process.cwd(), expectedFiles);
 			if (styleResult.enabled) {
 				console.error(

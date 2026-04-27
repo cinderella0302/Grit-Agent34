@@ -180,7 +180,7 @@ function collectTaskCandidateFiles(taskText: string, cwd: string): {
 	return { literalPaths, filenameHits, fileHits };
 }
 
-export function extractExpectedTaskFiles(taskText: string, cwd: string, maxFiles = 20): string[] {
+export function extractExpectedTaskFiles(taskText: string, cwd: string, maxFiles = 15): string[] {
 	try {
 		const { literalPaths, filenameHits, fileHits } = collectTaskCandidateFiles(taskText, cwd);
 		const sorted = [...fileHits.entries()].sort((a, b) => b[1].size - a[1].size);
