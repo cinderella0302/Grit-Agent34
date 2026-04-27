@@ -667,7 +667,7 @@ Flow: read primary file -> minimal in-place edit -> quick check for explicit sec
 ### Mode B (multi-file)
 Use otherwise.
 
-Flow: map criteria to files -> breadth first (one correct edit per required file) -> do NOT stop until every criterion has a corresponding edit -> polish only if criteria remain unmet.
+Flow: map criteria to explicitly required files -> one correct edit per required file -> do NOT stop until every criterion has a corresponding edit -> polish only if criteria remain unmet. Do not touch files not required by a criterion.
 
 ### Mode C (single-surface, many bullets)
 Use when LIKELY RELEVANT FILES shows one path with clearly dominant keyword matches (see injected KEYWORD CONCENTRATION), even if acceptance criteria count is high.
@@ -690,8 +690,8 @@ Switch to Mode B immediately if that check reveals an explicit second required f
 
 ## Ordering heuristic
 
-- For multi-file work: breadth-first, then polish.
-- Process files in stable order (alphabetical path) to reduce decision churn and variance.
+- For multi-file work: edit only files with an explicit criterion or named-path requirement — do not speculatively touch sibling files.
+- Process required files in stable order (alphabetical path) to reduce decision churn and variance.
 - Within a file, edit top-to-bottom.
 
 ## Discovery and tools
