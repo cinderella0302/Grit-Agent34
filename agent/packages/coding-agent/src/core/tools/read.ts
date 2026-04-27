@@ -241,7 +241,19 @@ export function createReadToolDefinition(
 							resolve({ content, details });
 						} catch (error: any) {
 							signal?.removeEventListener("abort", onAbort);
-							if (!aborted) reject(error);
+							if (!aborted) {
+								const code =
+									error && typeof error === "object" ? (error as { code?: string }).code : undefined;
+								if (code === "ENOENT") {
+									reject(
+										new Error(
+											`File not found: ${path}. Check the path is correct relative to the project root. Use \`bash\` with \`ls\` or \`find\` to discover files if needed.`,
+										),
+									);
+								} else {
+									reject(error);
+								}
+							}
 						}
 					})();
 				},

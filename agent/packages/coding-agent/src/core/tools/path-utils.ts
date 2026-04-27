@@ -1,6 +1,8 @@
-import { accessSync, constants } from "node:fs";
+import { accessSync, constants, readdirSync, statSync } from "node:fs";
 import * as os from "node:os";
-import { isAbsolute, resolve as resolvePath } from "node:path";
+import type { Dirent } from "node:fs";
+import { basename, isAbsolute, join, relative, resolve as resolvePath, sep } from "node:path";
+import { URL } from "node:url";
 
 const UNICODE_SPACES = /[\u00A0\u2000-\u200A\u202F\u205F\u3000]/g;
 const NARROW_NO_BREAK_SPACE = "\u202F";
@@ -36,8 +38,35 @@ function normalizeAtPrefix(filePath: string): string {
 	return filePath.startsWith("@") ? filePath.slice(1) : filePath;
 }
 
+const QUOTED_PATH_RE = /^(['"`])(.*)\1$/s;
+
+/** Normalize common model path formatting mistakes before resolving. */
+export function normalizePathInput(filePath: string): string {
+	let normalized = normalizeUnicodeSpaces(normalizeAtPrefix(filePath)).trim();
+	const quoted = normalized.match(QUOTED_PATH_RE);
+	if (quoted) {
+		normalized = quoted[2].trim();
+	}
+	if (normalized.startsWith("file:")) {
+		try {
+			const u = new URL(normalized);
+			normalized = decodeURIComponent(u.pathname || normalized);
+		} catch {
+			/* keep original when URL parsing fails */
+		}
+	}
+	if (normalized.startsWith("@/")) {
+		normalized = normalized.slice(2);
+	}
+	normalized = normalized.replace(/\\/g, "/");
+	if (normalized.startsWith("./")) {
+		normalized = normalized.slice(2);
+	}
+	return normalized;
+}
+
 export function expandPath(filePath: string): string {
-	const normalized = normalizeUnicodeSpaces(normalizeAtPrefix(filePath));
+	const normalized = normalizePathInput(filePath);
 	if (normalized === "~") {
 		return os.homedir();
 	}
@@ -59,8 +88,125 @@ export function resolveToCwd(filePath: string, cwd: string): string {
 	return resolvePath(cwd, expanded);
 }
 
+function isPathInsideRoot(root: string, candidate: string): boolean {
+	let rootAbs = resolvePath(root);
+	let candAbs = resolvePath(candidate);
+	if (process.platform === "win32") {
+		rootAbs = rootAbs.toLowerCase();
+		candAbs = candAbs.toLowerCase();
+	}
+	if (candAbs === rootAbs) return true;
+	const prefix = rootAbs.endsWith(sep) ? rootAbs : rootAbs + sep;
+	return candAbs.startsWith(prefix);
+}
+
+function toRepoRelativePosixPath(root: string, absolutePath: string): string {
+	const rel = relative(root, absolutePath);
+	if (!rel || rel === "." || rel === "") return ".";
+	return rel.split(sep).join("/");
+}
+
+const SKIP_WALK_DIRS = new Set([
+	"node_modules",
+	".git",
+	".next",
+	"dist",
+	"build",
+	"coverage",
+	".cache",
+	".turbo",
+	"__pycache__",
+	".venv",
+	"venv",
+]);
+
+function findByExactBasename(root: string, fileName: string, maxMatches = 32): string[] {
+	if (!fileName || fileName === "." || fileName === "..") return [];
+	const out: string[] = [];
+	const queue: string[] = [root];
+	let visited = 0;
+	const MAX_NODES = 100_000;
+	while (queue.length > 0 && out.length < maxMatches && visited < MAX_NODES) {
+		const dir = queue.pop()!;
+		let entries: Dirent[];
+		try {
+			entries = readdirSync(dir, { withFileTypes: true });
+		} catch {
+			continue;
+		}
+		for (const ent of entries) {
+			visited++;
+			if (ent.isSymbolicLink()) continue;
+			const full = join(dir, ent.name);
+			if (ent.isDirectory()) {
+				if (SKIP_WALK_DIRS.has(ent.name)) continue;
+				queue.push(full);
+				continue;
+			}
+			if (ent.isFile() && ent.name === fileName) {
+				out.push(toRepoRelativePosixPath(root, full));
+				if (out.length >= maxMatches) break;
+			}
+		}
+	}
+	return out;
+}
+
+function rankBasenameMatches(original: string, matches: string[]): string {
+	if (matches.length === 1) return matches[0];
+	const needle = original.replace(/\\/g, "/").replace(/^\.?\//, "").replace(/\/$/, "");
+	const segments = needle.split("/").filter(Boolean);
+	const score = (candidate: string): number => {
+		const c = candidate.replace(/\\/g, "/").replace(/^\.?\//, "");
+		let s = 0;
+		if (c === needle || c.endsWith("/" + needle) || c.endsWith(needle)) s += 10_000;
+		for (let i = 1; i <= Math.min(segments.length, 8); i++) {
+			const suf = segments.slice(-i).join("/");
+			if (suf && c.endsWith(suf)) s += i * 100;
+		}
+		return s;
+	};
+	return [...matches].sort((a, b) => score(b) - score(a) || a.localeCompare(b))[0];
+}
+
+export type ResolveWorkspacePathOptions = {
+	/** Expected node kind; if mismatched, behaves as unresolved. */
+	kind?: "file" | "directory" | "any";
+	/** Search workspace by exact basename when target doesn't exist. */
+	basenameFallback?: boolean;
+};
+
+/** Resolve and sanitize model paths with optional basename fallback inside cwd. */
+export function resolveWorkspacePath(filePath: string, cwd: string, options: ResolveWorkspacePathOptions = {}): string {
+	const normalized = normalizePathInput(filePath);
+	const absolute = resolveToCwd(normalized, cwd);
+	if (!isPathInsideRoot(cwd, absolute)) {
+		return normalized;
+	}
+	const kind = options.kind ?? "any";
+	if (fileExists(absolute)) {
+		try {
+			accessSync(absolute, constants.F_OK);
+			const stat = statSync(absolute);
+			const kindOk =
+				kind === "any" || (kind === "file" && stat.isFile()) || (kind === "directory" && stat.isDirectory());
+			if (kindOk) {
+				return toRepoRelativePosixPath(cwd, absolute);
+			}
+		} catch {
+			return normalized;
+		}
+	}
+	if (!options.basenameFallback || kind === "directory") {
+		return normalized;
+	}
+	const matches = findByExactBasename(cwd, basename(normalized.replace(/\/$/, "")));
+	if (matches.length === 0) return normalized;
+	return rankBasenameMatches(normalized, matches);
+}
+
 export function resolveReadPath(filePath: string, cwd: string): string {
-	const resolved = resolveToCwd(filePath, cwd);
+	const resolved = resolveToCwd(resolveWorkspacePath(filePath, cwd, { kind: "file", basenameFallback: true }), cwd);
 
 	if (fileExists(resolved)) {
 		return resolved;

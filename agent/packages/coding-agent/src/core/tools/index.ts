@@ -21,6 +21,14 @@ export {
 	editTool,
 	editToolDefinition,
 } from "./edit.js";
+export {
+	createEditDoneTool,
+	createEditDoneToolDefinition,
+	type EditDoneToolDetails,
+	type EditDoneToolInput,
+	editdoneTool,
+	editdoneToolDefinition,
+} from "./editdone.js";
 export { withFileMutationQueue } from "./file-mutation-queue.js";
 export {
 	createFindTool,
@@ -73,6 +81,14 @@ export {
 	truncateTail,
 } from "./truncate.js";
 export {
+	createPlanTool,
+	createPlanToolDefinition,
+	type PlanToolDetails,
+	type PlanToolInput,
+	planTool,
+	planToolDefinition,
+} from "./plan.js";
+export {
 	createWriteTool,
 	createWriteToolDefinition,
 	type WriteOperations,
@@ -92,9 +108,16 @@ import {
 	createBashToolDefinition,
 } from "./bash.js";
 import { createEditTool, createEditToolDefinition, editTool, editToolDefinition } from "./edit.js";
+import {
+	createEditDoneTool,
+	createEditDoneToolDefinition,
+	editdoneTool,
+	editdoneToolDefinition,
+} from "./editdone.js";
 import { createFindTool, createFindToolDefinition, findTool, findToolDefinition } from "./find.js";
 import { createGrepTool, createGrepToolDefinition, grepTool, grepToolDefinition } from "./grep.js";
 import { createLsTool, createLsToolDefinition, lsTool, lsToolDefinition } from "./ls.js";
+import { createPlanTool, createPlanToolDefinition, planTool, planToolDefinition } from "./plan.js";
 import {
 	createReadTool,
 	createReadToolDefinition,
@@ -107,7 +130,7 @@ import { createWriteTool, createWriteToolDefinition, writeTool, writeToolDefinit
 export type Tool = AgentTool<any>;
 export type ToolDef = ToolDefinition<any, any>;
 
-export const codingTools: Tool[] = [readTool, bashTool, editTool, writeTool];
+export const codingTools: Tool[] = [readTool, bashTool, editTool, writeTool, planTool, editdoneTool];
 export const readOnlyTools: Tool[] = [readTool, grepTool, findTool, lsTool];
 
 export const allTools = {
@@ -118,6 +141,8 @@ export const allTools = {
 	grep: grepTool,
 	find: findTool,
 	ls: lsTool,
+	plan: planTool,
+	editdone: editdoneTool,
 };
 
 export const allToolDefinitions = {
@@ -128,6 +153,8 @@ export const allToolDefinitions = {
 	grep: grepToolDefinition,
 	find: findToolDefinition,
 	ls: lsToolDefinition,
+	plan: planToolDefinition,
+	editdone: editdoneToolDefinition,
 };
 
 export type ToolName = keyof typeof allTools;
@@ -143,6 +170,8 @@ export function createCodingToolDefinitions(cwd: string, options?: ToolsOptions)
 		createBashToolDefinition(cwd, options?.bash),
 		createEditToolDefinition(cwd),
 		createWriteToolDefinition(cwd),
+		createPlanToolDefinition(),
+		createEditDoneToolDefinition(),
 	];
 }
 
@@ -164,6 +193,8 @@ export function createAllToolDefinitions(cwd: string, options?: ToolsOptions): R
 		grep: createGrepToolDefinition(cwd),
 		find: createFindToolDefinition(cwd),
 		ls: createLsToolDefinition(cwd),
+		plan: createPlanToolDefinition(),
+		editdone: createEditDoneToolDefinition(),
 	};
 }
 
@@ -173,6 +204,8 @@ export function createCodingTools(cwd: string, options?: ToolsOptions): Tool[] {
 		createBashTool(cwd, options?.bash),
 		createEditTool(cwd),
 		createWriteTool(cwd),
+		createPlanTool(),
+		createEditDoneTool(),
 	];
 }
 
@@ -189,5 +222,7 @@ export function createAllTools(cwd: string, options?: ToolsOptions): Record<Tool
 		grep: createGrepTool(cwd),
 		find: createFindTool(cwd),
 		ls: createLsTool(cwd),
+		plan: createPlanTool(),
+		editdone: createEditDoneTool(),
 	};
 }

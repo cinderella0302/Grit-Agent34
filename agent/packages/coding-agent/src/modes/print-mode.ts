@@ -11,6 +11,54 @@ import type { AgentSessionRuntimeHost } from "../core/agent-session-runtime.js";
 import { flushRawStdout, writeRawStdout } from "../core/output-guard.js";
 
 /**
+ * JSONL line for `--mode json` only. Kept here (not in rpc/jsonl) so print mode stays robust
+ * when session events contain cycles, bigint, or symbols — without aborting before `agent_end`.
+ */
+function stringifyPrintModeJsonLine(value: unknown): string {
+	try {
+		return JSON.stringify(value, printModeJsonReplacer());
+	} catch (err) {
+		const message = err instanceof Error ? err.message : String(err);
+		return JSON.stringify({ type: "json_serialization_error", error: message });
+	}
+}
+
+/** json-stringify-safe style: only values on the current ancestor stack are cycles (DAG-safe). */
+function printModeJsonReplacer(): (this: unknown, key: string, value: unknown) => unknown {
+	const stack: unknown[] = [];
+	const keys: string[] = [];
+
+	const cycleReplacer = function (this: unknown, _key: string, value: unknown): string {
+		if (stack[0] === value) return "[Circular ~]";
+		const idx = stack.indexOf(value);
+		return `[Circular ~.${keys.slice(0, idx).join(".")}]`;
+	};
+
+	return function (this: unknown, key: string, value: unknown): unknown {
+		if (typeof value === "symbol" || typeof value === "function") return undefined;
+		if (typeof value === "bigint") return value.toString();
+
+		if (stack.length > 0) {
+			const thisPos = stack.indexOf(this);
+			if (~thisPos) {
+				stack.splice(thisPos + 1);
+				keys.splice(thisPos, Number.POSITIVE_INFINITY, key);
+			} else {
+				stack.push(this);
+				keys.push(key);
+			}
+			if (~stack.indexOf(value)) {
+				return cycleReplacer.call(this, key, value);
+			}
+		} else {
+			stack.push(value);
+		}
+
+		return value;
+	};
+}
+
+/**
  * Options for print mode.
  */
 export interface PrintModeOptions {
@@ -80,8 +128,12 @@ export async function runPrintMode(runtimeHost: AgentSessionRuntimeHost, options
 
 		unsubscribe?.();
 		unsubscribe = session.subscribe((event) => {
-			if (mode === "json") {
-				writeRawStdout(`${JSON.stringify(event)}\n`);
+			if (mode !== "json") return;
+			try {
+				writeRawStdout(`${stringifyPrintModeJsonLine(event)}\n`);
+			} catch (err) {
+				const message = err instanceof Error ? err.message : String(err);
+				writeRawStdout(`${JSON.stringify({ type: "print_mode_stdout_error", error: message })}\n`);
 			}
 		});
 	};
@@ -90,7 +142,7 @@ export async function runPrintMode(runtimeHost: AgentSessionRuntimeHost, options
 		if (mode === "json") {
 			const header = session.sessionManager.getHeader();
 			if (header) {
-				writeRawStdout(`${JSON.stringify(header)}\n`);
+				writeRawStdout(`${stringifyPrintModeJsonLine(header)}\n`);
 			}
 		}
 

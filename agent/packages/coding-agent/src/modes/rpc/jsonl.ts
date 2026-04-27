@@ -8,7 +8,62 @@ import { StringDecoder } from "node:string_decoder";
  * U+2028 and U+2029. Clients must split records on `\n` only.
  */
 export function serializeJsonLine(value: unknown): string {
-	return `${JSON.stringify(value)}\n`;
+	return `${safeJsonStringify(value)}\n`;
+}
+
+/**
+ * JSON.stringify for JSONL streams: handles bigint and **true** cyclic references only.
+ *
+ * A naive WeakSet marks repeated object references as "circular", which breaks DAGs
+ * (same object reachable twice) and corrupts events with `"[Circular]"` strings — breaking
+ * harnesses that expect `agent_end` and valid shapes. This follows the stack-based approach
+ * from json-stringify-safe: only values already on the current ancestor path are cycles.
+ */
+export function safeJsonStringify(value: unknown): string {
+	try {
+		return JSON.stringify(value, serializer());
+	} catch (err) {
+		const message = err instanceof Error ? err.message : String(err);
+		return JSON.stringify({
+			type: "json_serialization_error",
+			error: message,
+		});
+	}
+}
+
+function serializer(): (this: unknown, key: string, value: unknown) => unknown {
+	const stack: unknown[] = [];
+	const keys: string[] = [];
+
+	const cycleReplacer = function (this: unknown, _key: string, value: unknown): string {
+		if (stack[0] === value) return "[Circular ~]";
+		const idx = stack.indexOf(value);
+		return `[Circular ~.${keys.slice(0, idx).join(".")}]`;
+	};
+
+	return function (this: unknown, key: string, value: unknown): unknown {
+		// JSON.stringify throws on Symbol; functions are normally omitted but custom structures may pass them through.
+		if (typeof value === "symbol" || typeof value === "function") return undefined;
+		if (typeof value === "bigint") return value.toString();
+
+		if (stack.length > 0) {
+			const thisPos = stack.indexOf(this);
+			if (~thisPos) {
+				stack.splice(thisPos + 1);
+				keys.splice(thisPos, Number.POSITIVE_INFINITY, key);
+			} else {
+				stack.push(this);
+				keys.push(key);
+			}
+			if (~stack.indexOf(value)) {
+				return cycleReplacer.call(this, key, value);
+			}
+		} else {
+			stack.push(value);
+		}
+
+		return value;
+	};
 }
 
 /**

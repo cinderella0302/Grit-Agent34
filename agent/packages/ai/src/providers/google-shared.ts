@@ -266,13 +266,19 @@ export function convertTools(
 /**
  * Map tool choice string to Gemini FunctionCallingConfigMode.
  */
-export function mapToolChoice(choice: string): FunctionCallingConfigMode {
+export function mapToolChoice(choice: string | { type: string; function?: { name?: string } }): FunctionCallingConfigMode {
+	if (typeof choice === "object" && choice?.type === "function") {
+		// Gemini has no OpenAI-style per-function tool_choice; closest is forcing a function call.
+		return FunctionCallingConfigMode.ANY;
+	}
 	switch (choice) {
 		case "auto":
 			return FunctionCallingConfigMode.AUTO;
 		case "none":
 			return FunctionCallingConfigMode.NONE;
 		case "any":
+		case "required":
+			// OpenAI `tool_choice: required` ↔ Gemini must emit a function call
 			return FunctionCallingConfigMode.ANY;
 		default:
 			return FunctionCallingConfigMode.AUTO;

@@ -901,6 +901,24 @@ export class AgentSession {
 		const loadedSkills = this._resourceLoader.getSkills().skills;
 		const loadedContextFiles = this._resourceLoader.getAgentsFiles().agentsFiles;
 
+		if (loaderSystemPrompt) {
+			const shared = {
+				cwd: this._cwd,
+				skills: loadedSkills,
+				contextFiles: loadedContextFiles,
+				customPrompt: loaderSystemPrompt,
+				appendSystemPrompt,
+				selectedTools: validToolNames,
+				toolSnippets,
+				promptGuidelines,
+			};
+			const planPrompt = buildSystemPrompt({ ...shared, tauPhase: "plan" });
+			const implementPrompt = buildSystemPrompt({ ...shared, tauPhase: "implement" });
+			this.agent.state.tauSystemPrompts = { plan: planPrompt, implement: implementPrompt };
+			return planPrompt;
+		}
+
+		this.agent.state.tauSystemPrompts = undefined;
 		return buildSystemPrompt({
 			cwd: this._cwd,
 			skills: loadedSkills,

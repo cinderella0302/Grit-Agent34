@@ -6,7 +6,7 @@
 import * as Diff from "diff";
 import { constants } from "fs";
 import { access, readFile } from "fs/promises";
-import { resolveToCwd } from "./path-utils.js";
+import { resolveToCwd, resolveWorkspacePath } from "./path-utils.js";
 
 export function detectLineEnding(content: string): "\r\n" | "\n" {
 	const crlfIdx = content.indexOf("\r\n");
@@ -35,6 +35,10 @@ export function normalizeForFuzzyMatch(text: string): string {
 	return (
 		text
 			.normalize("NFKC")
+			// Models often mix tabs with spaces; normalize tabs for comparison only.
+			.replace(/\t/g, "    ")
+			// Zero-width / invisible characters that break naive string equality
+			.replace(/[\u200B\u200C\u200D\uFEFF]/g, "")
 			// Strip trailing whitespace per line
 			.split("\n")
 			.map((line) => line.trimEnd())
@@ -54,6 +58,130 @@ export function normalizeForFuzzyMatch(text: string): string {
 	);
 }
 
+/**
+ * Find non-overlapping regions where each line matches needle lines after .trim() on both sides.
+ * Used when literal and normalized substring search fail (indent/whitespace drift).
+ */
+function findTrimmedLineBlocks(haystack: string, needle: string): Array<{ start: number; end: number }> {
+	const hLines = haystack.split("\n");
+	const nLines = needle.split("\n");
+	if (nLines.length === 0 || (nLines.length === 1 && nLines[0] === "")) {
+		return [];
+	}
+	const results: Array<{ start: number; end: number }> = [];
+	for (let i = 0; i <= hLines.length - nLines.length; i++) {
+		let ok = true;
+		for (let j = 0; j < nLines.length; j++) {
+			if (hLines[i + j].trim() !== nLines[j].trim()) {
+				ok = false;
+				break;
+			}
+		}
+		if (!ok) continue;
+		let start = 0;
+		for (let k = 0; k < i; k++) {
+			start += hLines[k].length + 1;
+		}
+		let end = start;
+		for (let k = 0; k < nLines.length; k++) {
+			end += hLines[i + k].length;
+			if (k < nLines.length - 1) end += 1;
+		}
+		results.push({ start, end });
+	}
+	return results;
+}
+
+/** Collapse runs of whitespace (incl. NBSP) for line comparison — helps HTML/markup where spacing drifts. */
+function collapseLineWhitespace(line: string): string {
+	return line.replace(/\s+/g, " ").trim();
+}
+
+/**
+ * Like findTrimmedLineBlocks, but lines match if their whitespace-collapsed forms are equal.
+ */
+function findRelaxedWhitespaceLineBlocks(haystack: string, needle: string): Array<{ start: number; end: number }> {
+	const hLines = haystack.split("\n");
+	const nLines = needle.split("\n");
+	if (nLines.length === 0 || (nLines.length === 1 && nLines[0] === "")) {
+		return [];
+	}
+	const results: Array<{ start: number; end: number }> = [];
+	for (let i = 0; i <= hLines.length - nLines.length; i++) {
+		let ok = true;
+		for (let j = 0; j < nLines.length; j++) {
+			if (collapseLineWhitespace(hLines[i + j]) !== collapseLineWhitespace(nLines[j])) {
+				ok = false;
+				break;
+			}
+		}
+		if (!ok) continue;
+		let start = 0;
+		for (let k = 0; k < i; k++) {
+			start += hLines[k].length + 1;
+		}
+		let end = start;
+		for (let k = 0; k < nLines.length; k++) {
+			end += hLines[i + k].length;
+			if (k < nLines.length - 1) end += 1;
+		}
+		results.push({ start, end });
+	}
+	return results;
+}
+
+/**
+ * Conservative fallback for large near-miss blocks:
+ * If oldText is long, match a unique range from first and last non-empty lines.
+ * This avoids hard failures when the model paraphrases a few interior lines.
+ */
+function findAnchorRangeBlocks(haystack: string, needle: string): Array<{ start: number; end: number }> {
+	const hLines = haystack.split("\n");
+	const nLines = needle.split("\n");
+	if (nLines.length < 6) return [];
+	const firstIdx = nLines.findIndex((l) => l.trim().length > 0);
+	const lastIdx = (() => {
+		for (let i = nLines.length - 1; i >= 0; i--) {
+			if (nLines[i].trim().length > 0) return i;
+		}
+		return -1;
+	})();
+	if (firstIdx === -1 || lastIdx === -1 || firstIdx >= lastIdx) return [];
+	const firstLine = collapseLineWhitespace(nLines[firstIdx]);
+	const lastLine = collapseLineWhitespace(nLines[lastIdx]);
+	if (!firstLine || !lastLine) return [];
+	const out: Array<{ start: number; end: number }> = [];
+	for (let i = 0; i < hLines.length; i++) {
+		if (collapseLineWhitespace(hLines[i]) !== firstLine) continue;
+		for (let j = i + 1; j < hLines.length; j++) {
+			if (collapseLineWhitespace(hLines[j]) !== lastLine) continue;
+			const span = j - i + 1;
+			// Keep fallback conservative: span should be reasonably close to target block size.
+			if (span < Math.max(3, nLines.length - 40) || span > nLines.length + 120) continue;
+			let start = 0;
+			for (let k = 0; k < i; k++) start += hLines[k].length + 1;
+			let end = start;
+			for (let k = i; k <= j; k++) {
+				end += hLines[k].length;
+				if (k < j) end += 1;
+			}
+			out.push({ start, end });
+		}
+	}
+	return out;
+}
+
+/** Try a few newline variants models often get wrong vs on-disk files */
+function newlineVariants(s: string): string[] {
+	const out: string[] = [s];
+	if (s.endsWith("\n")) {
+		out.push(s.slice(0, -1));
+	} else {
+		out.push(`${s}\n`);
+	}
+	return [...new Set(out)];
+}
+
 export interface FuzzyMatchResult {
 	/** Whether a match was found */
 	found: boolean;
@@ -71,6 +199,20 @@ export interface FuzzyMatchResult {
 }
 
 export interface Edit {
+	oldText: string;
+	newText: string;
+}
+
+/**
+ * Line-range based edit (0-indexed, inclusive [firstLine, lastLine]).
+ *
+ * The tool replaces the exact lines at [firstLine..lastLine] with `newText`, using
+ * `oldText` as a verification guard to confirm the model is editing the lines it
+ * thinks it is. `oldText` is compared against the joined content of the targeted
+ * lines with line-ending normalization and trailing-whitespace tolerance.
+ */
+export interface LineRangeEdit {
+	lineRange: [number, number];
 	oldText: string;
 	newText: string;
 }
@@ -109,27 +251,69 @@ export function fuzzyFindText(content: string, oldText: string): FuzzyMatchResul
 	// Try fuzzy match - work entirely in normalized space
 	const fuzzyContent = normalizeForFuzzyMatch(content);
 	const fuzzyOldText = normalizeForFuzzyMatch(oldText);
-	const fuzzyIndex = fuzzyContent.indexOf(fuzzyOldText);
 
-	if (fuzzyIndex === -1) {
+	for (const variant of newlineVariants(fuzzyOldText)) {
+		if (variant.length === 0) continue;
+		const fuzzyIndex = fuzzyContent.indexOf(variant);
+		if (fuzzyIndex !== -1) {
+			return {
+				found: true,
+				index: fuzzyIndex,
+				matchLength: variant.length,
+				usedFuzzyMatch: true,
+				contentForReplacement: fuzzyContent,
+			};
+		}
+	}
+
+	// Match line-by-line using trimmed equality (fixes indent/tab drift)
+	const trimmedBlocks = findTrimmedLineBlocks(fuzzyContent, fuzzyOldText);
+	if (trimmedBlocks.length === 1) {
+		const { start, end } = trimmedBlocks[0];
 		return {
-			found: false,
-			index: -1,
-			matchLength: 0,
-			usedFuzzyMatch: false,
-			contentForReplacement: content,
+			found: true,
+			index: start,
+			matchLength: end - start,
+			usedFuzzyMatch: true,
+			contentForReplacement: fuzzyContent,
 		};
 	}
 
-	// When fuzzy matching, we work in the normalized space for replacement.
-	// This means the output will have normalized whitespace/quotes/dashes,
-	// which is acceptable since we're fixing minor formatting differences anyway.
+	// Markup / wrapped lines: same tokens but different internal spacing
+	if (trimmedBlocks.length === 0) {
+		const relaxedBlocks = findRelaxedWhitespaceLineBlocks(fuzzyContent, fuzzyOldText);
+		if (relaxedBlocks.length === 1) {
+			const { start, end } = relaxedBlocks[0];
+			return {
+				found: true,
+				index: start,
+				matchLength: end - start,
+				usedFuzzyMatch: true,
+				contentForReplacement: fuzzyContent,
+			};
+		}
+	}
+	// Last-resort anchor match for long blocks with tiny interior drift.
+	if (trimmedBlocks.length === 0 && fuzzyOldText.split("\n").length >= 6) {
+		const anchored = findAnchorRangeBlocks(fuzzyContent, fuzzyOldText);
+		if (anchored.length === 1) {
+			const { start, end } = anchored[0];
+			return {
+				found: true,
+				index: start,
+				matchLength: end - start,
+				usedFuzzyMatch: true,
+				contentForReplacement: fuzzyContent,
+			};
+		}
+	}
+
 	return {
-		found: true,
-		index: fuzzyIndex,
-		matchLength: fuzzyOldText.length,
-		usedFuzzyMatch: true,
-		contentForReplacement: fuzzyContent,
+		found: false,
+		index: -1,
+		matchLength: 0,
+		usedFuzzyMatch: false,
+		contentForReplacement: content,
 	};
 }
 
@@ -141,7 +325,22 @@ export function stripBom(content: string): { bom: string; text: string } {
 function countOccurrences(content: string, oldText: string): number {
 	const fuzzyContent = normalizeForFuzzyMatch(content);
 	const fuzzyOldText = normalizeForFuzzyMatch(oldText);
-	return fuzzyContent.split(fuzzyOldText).length - 1;
+	let maxLiteral = 0;
+	for (const variant of newlineVariants(fuzzyOldText)) {
+		if (variant.length === 0) continue;
+		const n = fuzzyContent.split(variant).length - 1;
+		if (n > maxLiteral) maxLiteral = n;
+	}
+	if (maxLiteral > 0) {
+		return maxLiteral;
+	}
+	const trimmed = findTrimmedLineBlocks(fuzzyContent, fuzzyOldText).length;
+	if (trimmed > 0) {
+		return trimmed;
+	}
+	const relaxed = findRelaxedWhitespaceLineBlocks(fuzzyContent, fuzzyOldText).length;
+	if (relaxed > 0) return relaxed;
+	return findAnchorRangeBlocks(fuzzyContent, fuzzyOldText).length;
 }
 
 function getNotFoundError(path: string, editIndex: number, totalEdits: number): Error {
@@ -216,6 +415,24 @@ export function applyEditsToNormalizedContent(
 		const edit = normalizedEdits[i];
 		const matchResult = fuzzyFindText(baseContent, edit.oldText);
 		if (!matchResult.found) {
+			const fc = normalizeForFuzzyMatch(baseContent);
+			const fo = normalizeForFuzzyMatch(edit.oldText);
+			let literalOcc = 0;
+			for (const v of newlineVariants(fo)) {
+				if (v.length > 0) literalOcc = Math.max(literalOcc, fc.split(v).length - 1);
+			}
+			if (literalOcc === 0) {
+				const trimmedOcc = findTrimmedLineBlocks(fc, fo).length;
+				if (trimmedOcc > 1) {
+					throw getDuplicateError(path, i, normalizedEdits.length, trimmedOcc);
+				}
+				if (trimmedOcc === 0) {
+					const relaxedOcc = findRelaxedWhitespaceLineBlocks(fc, fo).length;
+					if (relaxedOcc > 1) {
+						throw getDuplicateError(path, i, normalizedEdits.length, relaxedOcc);
+					}
+				}
+			}
 			throw getNotFoundError(path, i, normalizedEdits.length);
 		}
 
@@ -406,14 +623,15 @@ export async function computeEditsDiff(
 	edits: Edit[],
 	cwd: string,
 ): Promise<EditDiffResult | EditDiffError> {
-	const absolutePath = resolveToCwd(path, cwd);
+	const resolvedPath = resolveWorkspacePath(path, cwd, { kind: "file", basenameFallback: true });
+	const absolutePath = resolveToCwd(resolvedPath, cwd);
 
 	try {
 		// Check if file exists and is readable
 		try {
 			await access(absolutePath, constants.R_OK);
 		} catch {
-			return { error: `File not found: ${path}` };
+			return { error: `File not found: ${resolvedPath}` };
 		}
 
 		// Read the file
@@ -422,7 +640,7 @@ export async function computeEditsDiff(
 		// Strip BOM before matching (LLM won't include invisible BOM in oldText)
 		const { text: content } = stripBom(rawContent);
 		const normalizedContent = normalizeToLF(content);
-		const { baseContent, newContent } = applyEditsToNormalizedContent(normalizedContent, edits, path);
+		const { baseContent, newContent } = applyEditsToNormalizedContent(normalizedContent, edits, resolvedPath);
 
 		// Generate the diff
 		return generateDiffString(baseContent, newContent);
@@ -442,4 +660,123 @@ export async function computeEditDiff(
 	cwd: string,
 ): Promise<EditDiffResult | EditDiffError> {
 	return computeEditsDiff(path, [{ oldText, newText }], cwd);
+}
+
+/**
+ * Project a string to lowercase ASCII alphanumerics ([a-z0-9]).
+ * Everything else (whitespace, punctuation, quotes, operators, case, Unicode) is dropped.
+ * Used for the tolerant `oldText` verification: trust the line range and only
+ * check that the model's `oldText` plausibly refers to the targeted lines.
+ */
+function lowerAlnumProjection(s: string): string {
+	return s.toLowerCase().replace(/[^a-z0-9]+/g, "");
+}
+
+/**
+ * Compare the actual lines at a range with the model-provided `oldText`.
+ *
+ * Policy: TRUST the line range. `oldText` is only a very flexible guard —
+ * we project both sides to lowercase-alphanumeric characters only and check
+ * that the oldText projection is a substring of the actual projection (or
+ * vice versa for very short lines). That tolerates all whitespace, case,
+ * punctuation, quotes, comment styling, and Unicode drift.
+ *
+ * Returns ok=true when either projection is empty (fully trusts the range)
+ * or when one projection contains the other.
+ */
+function verifyOldTextAgainstLines(
+	actualLines: string[],
+	expectedOldText: string,
+): { ok: boolean; actual: string } {
+	const actualJoined = actualLines.join("\n");
+	const expectedProj = lowerAlnumProjection(expectedOldText);
+	const actualProj = lowerAlnumProjection(actualJoined);
+
+	if (expectedProj.length === 0 || actualProj.length === 0) {
+		return { ok: true, actual: actualJoined };
+	}
+	if (actualProj.includes(expectedProj) || expectedProj.includes(actualProj)) {
+		return { ok: true, actual: actualJoined };
+	}
+	return { ok: false, actual: actualJoined };
+}
+
+/**
+ * Apply one or more line-range replacements to LF-normalized content.
+ *
+ * Policy: TRUST the model-provided line numbers. We silently clamp any
+ * start/end line that falls outside the file (startLine >= totalLines is
+ * treated as "append at end", endLine > totalLines-1 is clamped). We do not
+ * enforce non-overlapping ranges; overlapping edits are applied in reverse
+ * order of startLine and later-added content simply wins. The only soft
+ * guard is the tolerant lowercase-alphanumeric `oldText` check per entry.
+ */
+export function applyLineRangeEditsToNormalizedContent(
+	normalizedContent: string,
+	edits: LineRangeEdit[],
+	path: string,
+): AppliedEditsResult {
+	const lines = normalizedContent.split("\n");
+	const totalLines = lines.length;
+
+	// Normalize each edit into a safe clamped range. Append-at-end is supported
+	// by passing startLine >= totalLines (range becomes [totalLines, totalLines-1],
+	// which splice treats as pure insertion at the end).
+	type ClampedEdit = {
+		start: number;
+		end: number; // exclusive splice delete-end (end - start = deleteCount)
+		newText: string;
+		oldText: string;
+		idx: number;
+	};
+	const clamped: ClampedEdit[] = [];
+	for (let i = 0; i < edits.length; i++) {
+		const e = edits[i];
+		const rawFirst = Array.isArray(e.lineRange) && Number.isInteger(e.lineRange[0]) ? e.lineRange[0] : 0;
+		const rawLast = Array.isArray(e.lineRange) && Number.isInteger(e.lineRange[1]) ? e.lineRange[1] : rawFirst;
+		const first = Math.max(0, rawFirst);
+		// If the model addresses content past the end, treat as "append at end".
+		let start = Math.min(first, totalLines);
+		let endExclusive: number;
+		if (start >= totalLines) {
+			start = totalLines;
+			endExclusive = totalLines; // pure insertion
+		} else {
+			const last = Math.max(start, Math.min(rawLast, totalLines - 1));
+			endExclusive = last + 1;
+		}
+		clamped.push({
+			start,
+			end: endExclusive,
+			newText: typeof e.newText === "string" ? e.newText : "",
+			oldText: typeof e.oldText === "string" ? e.oldText : "",
+			idx: i,
+		});
+	}
+
+	// Soft oldText verification (the only remaining guard).
+	for (const c of clamped) {
+		if (c.end <= c.start) continue; // pure insertion — no content to verify
+		const slice = lines.slice(c.start, c.end);
+		const check = verifyOldTextAgainstLines(slice, c.oldText);
+		if (!check.ok) {
+			const prefix = clamped.length === 1 ? "" : `edits[${c.idx}] `;
+			throw new Error(
+				`${prefix}oldText does not match the actual content of lines ${c.start}-${c.end - 1} in ${path}.\n` +
+					`--- Your oldText ---\n${c.oldText}\n` +
+					`--- Actual file content at lines ${c.start}-${c.end - 1} ---\n${check.actual}`,
+			);
+		}
+	}
+
+	// Apply in reverse order of start so earlier indices stay stable.
+	const newLines = lines.slice();
+	const applyOrder = clamped.slice().sort((a, b) => b.start - a.start || b.end - a.end);
+	for (const c of applyOrder) {
+		const replacement = normalizeToLF(c.newText).split("\n");
+		newLines.splice(c.start, c.end - c.start, ...replacement);
+	}
+
+	const newContent = newLines.join("\n");
+	return { baseContent: normalizedContent, newContent };
 }

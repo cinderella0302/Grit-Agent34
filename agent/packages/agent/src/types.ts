@@ -253,6 +253,8 @@ export type AgentMessage = Message | CustomAgentMessages[keyof CustomAgentMessag
 export interface AgentState {
 	/** System prompt sent with each model request. */
 	systemPrompt: string;
+	/** Optional plan/implement system prompts for harness runs (see \`AgentContext.tauSystemPrompts\`). */
+	tauSystemPrompts?: { plan: string; implement: string };
 	/** Active model used for future turns. */
 	model: Model<any>;
 	/** Requested reasoning level for future turns. */
@@ -310,6 +312,11 @@ export interface AgentTool<TParameters extends TSchema = TSchema, TDetails = any
 export interface AgentContext {
 	/** System prompt included with the request. */
 	systemPrompt: string;
+	/**
+	 * When set (τ / harness dual-prompt mode), the agent loop selects \`plan\` vs \`implement\` text per \`executionMode\`.
+	 * \`systemPrompt\` should stay aligned with the plan-phase string for parsing task metadata (e.g. acceptance criteria).
+	 */
+	tauSystemPrompts?: { plan: string; implement: string };
 	/** Transcript visible to the model. */
 	messages: AgentMessage[];
 	/** Tools available for this run. */
