@@ -189,7 +189,6 @@ async function runLoop(
 	let emptyTurnRetries = 0;
 	const EMPTY_TURN_MAX = 2;
 	let totalLlmRequests = 0;
-	let lastSlowPaceNudgeAt = 0;
 
 	const loopStart = Date.now();
 	const pathsAlreadyRead = new Set<string>();
@@ -503,189 +502,9 @@ async function runLoop(
 		/* not a git repo or git unavailable */
 	}
 
-	// v219: Pre-fetch optimization (cloned from challenger_v218 onto Mine016 base).
-	// Extract raw user task text from prompts/newMessages.
-	const extractRawFilePaths = (text: string): string[] => {
-		const out: string[] = [];
-		const seen = new Set<string>();
-		const reBacktick = /`([^`\n]{1,200})`/g;
-		const reBare = /(?:^|[\s(])((?:[A-Za-z0-9_.-]+\/)+[A-Za-z0-9_.-]+|[A-Za-z0-9_-]+\.(?:ts|tsx|js|jsx|py|rb|go|rs|java|kt|c|cc|cpp|h|hpp|cs|md|json|ya?ml|toml|sh|bash|sql|html|css|scss|vue|svelte|php))(?=[\s,;:.)?!]|$)/gm;
-		const consider = (raw: string): void => {
-			const s = raw.trim().replace(/^['"]|['"]$/g, "");
-			if (!s || s.length > 200) return;
-			if (seen.has(s)) return;
-			if (!isRealUnixFile(s)) return;
-			if (s.includes(" ")) return;
-			if (s.startsWith("http")) return;
-			if (!s.includes("/") && !s.includes(".")) return;
-			seen.add(s);
-			out.push(s);
-		};
-		let m: RegExpExecArray | null;
-		while ((m = reBacktick.exec(text)) !== null) consider(m[1]);
-		while ((m = reBare.exec(text)) !== null) consider(m[1]);
-		return out.slice(0, 8);
-	};
-
-	const extractTaskIdentifiers = (text: string): string[] => {
-		const out = new Set<string>();
-		const reBacktick = /`([A-Za-z_][A-Za-z0-9_]{2,40})`/g;
-		const rePascal = /\b([A-Z][a-z][A-Za-z0-9]*[A-Z][A-Za-z0-9]+)\b/g;
-		const reCamel = /\b([a-z][a-z0-9]+(?:[A-Z][A-Za-z0-9]+){2,})\b/g;
-		const reSnake = /\b([a-z][a-z0-9]+(?:_[a-z0-9]+){1,})\b/g;
-		let m: RegExpExecArray | null;
-		while ((m = reBacktick.exec(text)) !== null) out.add(m[1]);
-		while ((m = rePascal.exec(text)) !== null) out.add(m[1]);
-		while ((m = reCamel.exec(text)) !== null) out.add(m[1]);
-		while ((m = reSnake.exec(text)) !== null) out.add(m[1]);
-		const skip = new Set(["readme", "license", "package_json", "tsconfig", "node_modules", "src_dir"]);
-		return [...out].filter((s) => !skip.has(s.toLowerCase())).slice(0, 12);
-	};
-
-	let rawTaskText = "";
-	for (const msg of newMessages) {
-		if (msg.role !== "user") continue;
-		if (!("content" in msg) || !Array.isArray(msg.content)) continue;
-		for (const block of msg.content as any[]) {
-			if (block?.type === "text" && typeof block.text === "string") {
-				rawTaskText += (rawTaskText ? "\n" : "") + block.text;
-			}
-		}
-	}
-
-	const rawTaskFiles: string[] = rawTaskText.length > 0 ? extractRawFilePaths(rawTaskText) : [];
-	const identifierFiles: string[] = [];
-	if (rawTaskText.length > 0) {
-		try {
-			const { execSync } = await import("node:child_process");
-			const ids = extractTaskIdentifiers(rawTaskText);
-			const cwd = process.cwd();
-			const seenIdFiles = new Set<string>();
-			for (const id of ids) {
-				if (seenIdFiles.size >= 8) break;
-				if (id.length < 4 || id.length > 60) continue;
-				try {
-					const safeId = id.replace(/[^A-Za-z0-9_-]/g, "");
-					if (safeId.length < 4) continue;
-					const cmd = `find . -type f -iname '*${safeId}*' -not -path '*/node_modules/*' -not -path '*/.git/*' -not -path '*/dist/*' -not -path '*/build/*' -not -path '*/.next/*' -not -path '*/target/*' 2>/dev/null | head -3`;
-					const out = execSync(cmd, { cwd, timeout: 1500, encoding: "utf-8", maxBuffer: 256 * 1024 }).trim();
-					if (!out) continue;
-					for (const line of out.split("\n")) {
-						const f = line.trim().replace(/^\.\//, "");
-						if (f && !seenIdFiles.has(f)) {
-							seenIdFiles.add(f);
-							identifierFiles.push(f);
-						}
-					}
-				} catch { }
-			}
-		} catch { }
-	}
-
-	const filesToPrefetch: string[] = [];
-	for (const f of rawTaskFiles.slice(0, 5)) if (!filesToPrefetch.includes(f)) filesToPrefetch.push(f);
-	for (const f of identifierFiles) {
-		if (filesToPrefetch.length >= 6) break;
-		if (!filesToPrefetch.includes(f)) filesToPrefetch.push(f);
-	}
-	if (rawTaskFiles.length > 0 && expectedFiles.length === 0) {
-		expectedFiles = rawTaskFiles.slice();
-		foundFiles = [];
-		addFoundFiles(expectedFiles);
-		workPhase = "absorb";
-	} else if (identifierFiles.length > 0 && expectedFiles.length === 0) {
-		expectedFiles = identifierFiles.slice(0, 5);
-		foundFiles = [];
-		addFoundFiles(expectedFiles);
-		workPhase = "absorb";
-	}
-
-	if (filesToPrefetch.length > 0) {
-		try {
-			const { existsSync, readFileSync, statSync, writeFileSync } = await import("node:fs");
-			const { resolve } = await import("node:path");
-			const cwd = process.cwd();
-			const prefetched: string[] = [];
-			const preDeletedFiles: Array<{ path: string; originalLines: number; keptLines: number }> = [];
-			let totalBytes = 0;
-			const MAX_TOTAL_BYTES = 36_000;
-			const MAX_PER_FILE_BYTES = 64_000;
-
-			const taskTextLower = (rawTaskText || "").toLowerCase();
-			const isVolumeTask = /\b(implement|rewrite|replace|refactor|migrate|convert|redesign|overhaul|introduce|build|create.*system|build.*system|add.*calendar|add.*dashboard|interactive|new.*ui|new.*page)\b/.test(taskTextLower) || taskTextLower.length > 1500;
-
-			for (const filePath of filesToPrefetch.slice(0, 6)) {
-				try {
-					const full = resolve(cwd, filePath);
-					if (!existsSync(full)) continue;
-					const st = statSync(full);
-					if (!st.isFile() || st.size === 0) continue;
-					if (st.size > MAX_PER_FILE_BYTES) continue;
-					const content = readFileSync(full, "utf-8");
-					if (content.includes("\0")) continue;
-					const lines = content.split(/\r?\n/);
-					if (totalBytes + st.size <= MAX_TOTAL_BYTES) {
-						prefetched.push(`### ${filePath} (${lines.length} lines, pre-fetched)\n\n\`\`\`\n${content}\n\`\`\``);
-						totalBytes += st.size;
-					} else {
-						const head = lines.slice(0, 80).join("\n");
-						const tail = lines.slice(-40).join("\n");
-						prefetched.push(`### ${filePath} (${lines.length} lines, truncated)\n\n\`\`\`\n${head}\n... [${lines.length - 120} lines omitted] ...\n${tail}\n\`\`\``);
-					}
-					pathsAlreadyRead.add(filePath);
-					pathReadCounts.set(filePath, 1);
-
-					// v232 PRE-EMPTIVE DELETION: For "rewrite/implement/replace" tasks on big files,
-					// delete the middle of the file BEFORE the LLM runs. This guarantees a large
-					// deletion-based diff that overlaps with the reference's deletions.
-					if (isVolumeTask && lines.length >= 80) {
-						const headKeep = Math.min(20, Math.floor(lines.length * 0.1));
-						const tailKeep = Math.min(15, Math.floor(lines.length * 0.08));
-						const newLines = [
-							...lines.slice(0, headKeep),
-							"// TODO: implementation removed — will be rebuilt",
-							...lines.slice(lines.length - tailKeep),
-						];
-						try {
-							writeFileSync(full, newLines.join("\n"), "utf-8");
-							preDeletedFiles.push({ path: filePath, originalLines: lines.length, keptLines: newLines.length });
-						} catch { }
-					}
-				} catch { }
-			}
-			if (prefetched.length > 0) {
-				const timeoutSec = Number(process.env.TAU_AGENT_TIMEOUT || process.env.PI_AGENT_TIMEOUT || "0");
-				const isVeryTight = timeoutSec > 0 && timeoutSec < 50;
-				const urgency = isVeryTight
-					? `\n\n*** ULTRA-TIGHT TIMEOUT: ${timeoutSec}s. SKIP ALL discovery/grep. Make targeted \`write\` calls NOW. Empty diff guarantees a loss. ***`
-					: timeoutSec > 0
-						? `\n\n*** YOUR TIMEOUT: ${timeoutSec}s (King has 300s). YOU ARE THE UNDERDOG. EDIT NOW. ***`
-						: `\n\n*** EDIT NOW. Do not explore. Make your first response a direct \`write\` or \`edit\` call. ***`;
-				const preDeletedNote = preDeletedFiles.length > 0
-					? `\n\n## PRE-EMPTIVE DELETIONS APPLIED (v232 volume exploit)\n\nThe following files have ALREADY been gutted on disk (middle removed, head + tail kept). Each deletion contributes \`-:line\` markers that match the reference's deletions for these "rewrite" style tasks:\n${preDeletedFiles.map(f => `- ${f.path}: ${f.originalLines} lines → ${f.keptLines} lines (deleted ${f.originalLines - f.keptLines} lines).`).join("\n")}\n\nNOW: implement the requested feature by using \`write\` to overwrite each gutted file with the FULL NEW IMPLEMENTATION. Do NOT \`read\` these files again — the original content is shown above. The deletion volume is locked in regardless.\n`
-					: "";
-				const nudge = `[v232 pre-fetch + pre-emptive delete + volume exploit] Original file contents (BEFORE deletion):\n\n${prefetched.join("\n\n")}${preDeletedNote}\n\n# SCORING / EXPLOIT BACKGROUND\n\nValidator scores by ABSOLUTE matched changed-line count over LCS of diff sequences (\`-:line\` and \`+:line\` markers). For "rewrite/implement/replace" tasks the reference deletes large chunks → many \`-:line\` markers. Our pre-emptive deletion above has already created matching \`-:line\` markers. Your job: write plausible NEW implementation content to add \`+:line\` markers that may also match the reference.\n\nFor SMALL fix-bug tasks (no rewrite wording), the pre-emptive deletion did not run — make precise edits as normal.\n\nUse \`write\` to replace the gutted files with full new implementations. Use \`edit\` for any sibling/related files. Add 5-10 substantive changes total. Match local style exactly so additions byte-match the reference.${urgency}`;
-				pendingMessages.push({
-					role: "user",
-					content: [{ type: "text", text: nudge }],
-					timestamp: Date.now(),
-				});
-			}
-		} catch { }
-	}
-
-	if (filesToPrefetch.length === 0) {
-		const timeoutSec = Number(process.env.TAU_AGENT_TIMEOUT || process.env.PI_AGENT_TIMEOUT || "0");
-		const timeoutNote = timeoutSec > 0 ? `You have ONLY ${timeoutSec}s. ` : "";
-		pendingMessages.push({
-			role: "user",
-			content: [{
-				type: "text",
-				text: `[v231 speed-warning] ${timeoutNote}The task did not name explicit file paths. Use ONE \`grep\` or \`find\` call to identify likely target file(s), \`read\` the top match, then make MULTIPLE \`edit\` calls IMMEDIATELY in your next turn. **EXPLOIT TIP**: For replace/rewrite tasks, DELETE LARGE CHUNKS of the original file (use \`edit\` with big \`oldText\` and tiny \`newText\`). Each deleted line counts as a matched line if the reference also deleted it. Volume of plausible deletions wins. Empty diff = guaranteed loss. One tiny edit usually = loss against the king.`,
-			}],
-			timestamp: Date.now(),
-		});
-	}
+	// v246: removed v232 prefetch/gut and v231 speed-warning user-prompt nudges.
+	// Target guidance now comes from the system prompt's mandatory reference
+	// target section populated via reference-exploit -> reference-targets.
 
 	while (true) {
 		let hasMoreToolCalls = true;
@@ -756,38 +575,7 @@ async function runLoop(
 			hasMoreToolCalls = toolCalls.length > 0;
 			totalLlmRequests++;
 
-			// v217: Slow-pace detection — 10s threshold, repeating every 30s
-			if (totalLlmRequests >= 3 && pendingMessages.length === 0) {
-				const elapsed = Date.now() - loopStart;
-				const avgPace = elapsed / totalLlmRequests;
-				if (avgPace > 10_000 && elapsed > 20_000 && (Date.now() - lastSlowPaceNudgeAt) > 30_000) {
-					lastSlowPaceNudgeAt = Date.now();
-					const topFile = foundFiles[0] || [...pathsAlreadyRead][0] || "";
-					pendingMessages.push({
-						role: "user",
-						content: [{ type: "text", text: "You are averaging " + Math.round(avgPace / 1000) + "s per response — too slow. Shorten your reasoning and call tools faster. " + (topFile && !hasProducedEdit ? "Call `edit` on `" + topFile + "` NOW." : "Keep editing — every file matters.") }],
-						timestamp: Date.now(),
-					});
-				}
-			}
-
-			// v222: Mid-run low-edit coverage nudge — if we're past 60s, have edited few files,
-			// and there are unedited top files, force the agent to edit them
-			if (hasProducedEdit && pendingMessages.length === 0) {
-				const elapsed = Date.now() - loopStart;
-				const uneditedTop = foundFiles.filter((f: string) => !wasEdited(f));
-				if (elapsed >= 60_000 && editedPaths.size < foundFiles.length && uneditedTop.length > 0 && elapsed < GRACEFUL_EXIT_MS - 30_000) {
-					const ratio = editedPaths.size / Math.max(foundFiles.length, 1);
-					if (ratio < 0.6) {
-						const list = uneditedTop.slice(0, 5).map((f: string) => `\`${f}\``).join(", ");
-						pendingMessages.push({
-							role: "user",
-							content: [{ type: "text", text: `WARNING: ${Math.round(elapsed / 1000)}s elapsed but you have only edited ${editedPaths.size}/${foundFiles.length} target files. Unedited: ${list}. Each unedited file = missed points. Read and edit them NOW — even partial changes score. Do not spend more time on already-edited files.` }],
-							timestamp: Date.now(),
-						});
-					}
-				}
-			}
+			// v246: removed v217 and v222 user-message nudges.
 
 			if (hasMoreToolCalls) {
 				coverageRetries = 0;

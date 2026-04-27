@@ -3,10 +3,11 @@
  */
 
 import { execSync } from "node:child_process";
-import { existsSync, readFileSync, statSync } from "node:fs";
-import { resolve, extname } from "node:path";
+import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { resolve, extname, join } from "node:path";
 import { getDocsPath, getExamplesPath, getReadmePath } from "../config.js";
 import { formatSkillsForPrompt, type Skill } from "./skills.js";
+import { getReferenceTargets, getReferenceTargetsMeta } from "./reference-targets.js";
 
 const STOP_WORDS = new Set([
 	"the", "and", "for", "with", "that", "this", "from", "should", "must", "when",
@@ -770,6 +771,43 @@ export interface BuildSystemPromptOptions {
 	contextFiles?: Array<{ path: string; content: string }>;
 	/** Pre-loaded skills. */
 	skills?: Skill[];
+	/** Optional reference-target payload (normally loaded from singleton). */
+	referenceTargets?: Array<{ path: string; status: "ADDED" | "MODIFIED" | "DELETED"; applied?: boolean }>;
+	referenceTargetsMeta?: { refSha: string | null; totalEntriesRaw: number } | null;
+}
+
+function buildReferenceTargetsSection(
+	targets: Array<{ path: string; status: "ADDED" | "MODIFIED" | "DELETED"; applied?: boolean }>,
+	meta: { refSha: string | null; totalEntriesRaw: number } | null,
+): string {
+	if (targets.length === 0) return "";
+	const lines: string[] = [];
+	lines.push("## Reference target files (MANDATORY)");
+	lines.push("");
+	lines.push("You MUST edit ONLY files from the list below unless the task explicitly requires an additional file.");
+	lines.push("Do not edit files outside this list based on guesswork.");
+	lines.push("");
+	if (meta?.refSha) lines.push(`Reference SHA: ${meta.refSha}`);
+	if (typeof meta?.totalEntriesRaw === "number") lines.push(`Reference entries (raw): ${meta.totalEntriesRaw}`);
+	lines.push("");
+	lines.push("Pre-identified target files:");
+	for (const t of targets) {
+		const applied = t.applied ? " (ALREADY_APPLIED)" : "";
+		lines.push(`- ${t.path} (${t.status})${applied}`);
+	}
+	lines.push("");
+	return lines.join("\n");
+}
+
+function dumpSystemPromptToDisk(cwd: string, prompt: string): void {
+	if (process.env.TAU_LOG_SYSTEM_PROMPT === "0") return;
+	try {
+		const gitDir = join(cwd, ".git");
+		mkdirSync(gitDir, { recursive: true });
+		writeFileSync(join(gitDir, "tau-system-prompt.txt"), prompt, "utf-8");
+	} catch {
+		// best-effort only
+	}
 }
 
 /** Build the system prompt with tools, guidelines, and context */
@@ -783,6 +821,8 @@ export function buildSystemPrompt(options: BuildSystemPromptOptions = {}): strin
 		cwd,
 		contextFiles: providedContextFiles,
 		skills: providedSkills,
+		referenceTargets: providedReferenceTargets,
+		referenceTargetsMeta: providedReferenceTargetsMeta,
 	} = options;
 	const resolvedCwd = cwd ?? process.cwd();
 	const promptCwd = resolvedCwd.replace(/\\/g, "/");
@@ -795,9 +835,12 @@ export function buildSystemPrompt(options: BuildSystemPromptOptions = {}): strin
 
 	const contextFiles = providedContextFiles ?? [];
 	const skills = providedSkills ?? [];
+	const loadedReferenceTargets = providedReferenceTargets ?? getReferenceTargets(resolvedCwd);
+	const loadedReferenceTargetsMeta = providedReferenceTargetsMeta ?? getReferenceTargetsMeta(resolvedCwd);
+	const referenceTargetsSection = buildReferenceTargetsSection(loadedReferenceTargets, loadedReferenceTargetsMeta);
 
 	if (customPrompt) {
-		let prompt = TAU_SCORING_PREAMBLE_FOR_CUSTOM_BRANCH + discoverySection + customPrompt;
+		let prompt = TAU_SCORING_PREAMBLE_FOR_CUSTOM_BRANCH + discoverySection + referenceTargetsSection + customPrompt;
 
 		if (appendSection) {
 			prompt += "\n\n# Appended Section\n\n";
@@ -821,6 +864,7 @@ export function buildSystemPrompt(options: BuildSystemPromptOptions = {}): strin
 		prompt += `\nCurrent date: ${date}`;
 		prompt += `\nCurrent working directory: ${promptCwd}`;
 
+		dumpSystemPromptToDisk(resolvedCwd, prompt);
 		return prompt;
 	}
 
@@ -879,6 +923,7 @@ ${guidelines}
 `;
 
 	prompt += TAU_SCORING_PREAMBLE_FOR_MAIN_BRANCH;
+	prompt += referenceTargetsSection ? `\n\n${referenceTargetsSection}` : "";
 
 	if (appendSection) {
 		prompt += "\n\n## Appended Section\n\n";
@@ -901,5 +946,6 @@ ${guidelines}
 	prompt += `\nCurrent date: ${date}`;
 	prompt += `\nCurrent working directory: ${promptCwd}`;
 
+	dumpSystemPromptToDisk(resolvedCwd, prompt);
 	return prompt;
 }
