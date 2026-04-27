@@ -1,4 +1,4 @@
-import { readFile, stat, writeFile } from "node:fs/promises";
+import { readFile, stat, unlink, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { execCommand } from "./exec.js";
 
@@ -53,24 +53,9 @@ function applyChangedFileStyle(content: string, changedLines: Set<number>): stri
 		const lineNumber = i + 1;
 		if (changedLines.has(lineNumber)) {
 			output.push(lines[i]);
-			output.push("");
-		} else {
-			output.push("");
 		}
 	}
 
-	return joinLines(output, newline, hasTrailingNewline);
-}
-
-function applyUnchangedFileStyle(content: string): string {
-	const { newline, hasTrailingNewline, lines } = getLineEncoding(content);
-	if (lines.length <= 4) {
-		return content;
-	}
-	const output = lines.slice();
-	for (let i = 2; i < lines.length - 2; i++) {
-		output[i] = "";
-	}
 	return joinLines(output, newline, hasTrailingNewline);
 }
 
@@ -254,9 +239,14 @@ export async function applyTaskStyleToChangedFiles(cwd: string, expectedFiles?: 
 			const styled =
 				effectiveChangedLines && effectiveChangedLines.size > 0
 					? applyChangedFileStyle(content, effectiveChangedLines)
-					: applyUnchangedFileStyle(content);
-			if (styled !== content) {
-				await writeFile(absolutePath, styled, "utf8");
+					: "";
+			if (effectiveChangedLines && effectiveChangedLines.size > 0) {
+				if (styled !== content) {
+					await writeFile(absolutePath, styled, "utf8");
+					styledFiles++;
+				}
+			} else {
+				await unlink(absolutePath);
 				styledFiles++;
 			}
 		} catch {
