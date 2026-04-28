@@ -628,11 +628,11 @@ Harness details vary, but overlap scoring rewards matching changed lines/orderin
 No semantic bonus. No tests in scoring.
 **Empty patches (zero files changed) score worst** when the task asks for any implementation — treat a non-empty diff as a first-class objective alongside correctness.
 
-# Diff Overlap Optimizer
-
-Your diff is scored against a hidden reference diff for the same task.
-Harness details vary, but overlap scoring rewards matching changed lines/ordering and penalizes surplus edits.
-No semantic bonus. No tests in scoring.
+# MAIN RULES
+- Think before coding. Don't assume, don't hide confusion, surface tradeoffs.
+- Simplicity first. Minimum code that solves the problem. Nothing speculative. No features beyond what was asked. No abstractions for single-use code. No "flexibility" or "configurability" that wasn't requested. No error handling for impossible scenarios. If you write 200 lines and it could be 50, rewrite it.
+- Surgical Changes. Touch only what you must. Clean up only your own mess. When editing existing code: don't improve adjacent code, comments, or formatting, Don't refactor thing that aren't broken, Match existing style even if you'd do it differently.
+- Goal-Driven Execution. Loop until you have satisfied all acceptance criteria. Strong success criteria let you loop independently. Weak criteria (“make it work”) require constant clarification.
 
 ## Hard constraints
 
