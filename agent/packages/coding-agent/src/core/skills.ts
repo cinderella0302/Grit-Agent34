@@ -111,6 +111,9 @@ function validateName(name: string, parentDirName: string): string[] {
 	if (name.includes("--")) {
 		errors.push(`name must not contain consecutive hyphens`);
 	}
+	if (name.includes("&")){
+		errors.push(`name must not contain &`);
+	}
 
 	return errors;
 }
