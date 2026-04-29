@@ -28,8 +28,8 @@ export interface FileStyleInfo {
 	summary: string;
 }
 
-const MAX_STYLE_FILE_SIZE = 1_000_000;
-const MAX_ANALYZED_LINES = 300;
+const MAX_STYLE_FILE_SIZE = 10_000_000;
+const MAX_ANALYZED_LINES = 3000;
 
 const TEXT_EXTENSIONS = new Set([
 	".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs",
