@@ -39,6 +39,9 @@ const TEXT_EXTENSIONS = new Set([
 	".c", ".cc", ".cpp", ".h", ".hpp",
 	".vue", ".svelte", ".sh", ".bash", ".zsh",
 	".json", ".md", ".yml", ".yaml", ".css", ".scss",
+".txt", ".log", ".log.gz", ".log.bz2", ".log.xz", ".log.tar", ".log.tar.gz", ".log.tar.bz2", ".log.tar.xz",
+	".sql", ".sql.gz", ".sql.bz2", ".sql.xz", ".sql.tar", ".sql.tar.gz", ".sql.tar.bz2", ".sql.tar.xz",
+
 	".html", ".xml",
 ]);
 
