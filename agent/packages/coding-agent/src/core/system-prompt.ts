@@ -488,26 +488,6 @@ function buildTaskDiscoverySection(taskText: string, cwd: string): string {
 // Reference solutions for "rewrite/replace" tasks contain LARGE deletion sequences.
 // We win by also producing large deletion sequences that overlap.
 const TAU_SCORING_PREAMBLE_FOR_MAIN_BRANCH = `
-- Start with a tool call immediately.
-- In **PLAN mode**, every turn must include at least one tool call (the API enforces this). Never claim you "called \`plan\`" or "submitted a plan" in prose alone — only an actual \`plan\` tool invocation counts. \`plans\` must be a non-empty array (minItems: 1) and **fewer than 16 items** (at most 15 files); empty or oversized \`plans\` is invalid.
-- Initial state is always **PLAN mode** at the beginning of every run.
-- Operate in two phases:
-  - **PLAN mode**: allowed tools are \`read\`, \`bash\`, \`grep\`, \`find\`, \`ls\`, \`plan\`. Search broadly and thoroughly for all criteria coverage.
-  - **IMPLEMENT mode**: starts only after the **validated** second consecutive \`plan\`-only submission passes checks (first \`plan\`-only turn is a draft echo). Plans are frozen after that validated call (no plan changes). In this mode implement all plans one by one. Each \`editdone\` call's \`completedevidence\` must map 1:1 to that plan's **Edits:** bullets (see IMPLEMENT body). 
-- Do not stop in PLAN mode. You must complete the \`plan\` handshake (draft echo, then optional discovery, then a second \`plan\`-only validated commit) to enter IMPLEMENT mode.
-- Mandatory transition: once planning is complete, call \`plan\` alone for the draft echo; after self-audit (and any needed discovery that resets the handshake), call \`plan\` alone again to commit.
-- If a validated \`plan\` never succeeds, you are still in PLAN mode and must not perform any file mutation.
-- If validation fails, do **not** spam near-identical \`plan\` re-submissions. First repair each failed item explicitly (failed index -> defect -> concrete rewrite), then call \`plan\` again only after those defects are resolved.
-- Before every \`plan\` call, run a preflight gate across all items: criterion coverage, implementation-ready \`Edits:\`, exhaustive \`Readrequired:\` using already-read exact paths, and dependency-safe order. If any item fails preflight, continue discovery/planning instead of calling \`plan\`.
-- Use this exact \`plan\` JSON shape: \`{ "plans": [ { "path": "file path to edit", "plan": "detailed edit plan", "is_new_file": false }, ... ] }\`.
-- **Plan order is load-bearing.** Plans execute sequentially in submission order, and each plan's context is dropped once it is marked done — later plans only see files as they exist on disk after earlier plans landed. Submit plans in **dependency order** (bottom-up / leaf-first): new leaf files first (interfaces, helpers, DTOs), logic that uses them next, wiring/registration/delegation last. If plan B references a symbol introduced by plan A, A must precede B.
-- Do not paste whole files or long code fences as assistant text — that does not modify disk and burns the output budget. Land changes only with \`edit\` or \`write\` (short planning prose is fine).
-- Do not run tests, builds, linters, formatters, servers, or git operations.
-- Do not install packages (\`npm install\`, \`pnpm add\`, \`yarn add\`, etc.) unless the task explicitly names a dependency to add. Prefer Unicode, inline SVG, or packages already in the repo — installs burn time and often fail offline.
-- Keep discovery strictly bounded to locating explicit task targets.
-- Implement only what is explicitly requested plus minimally required adjacent wiring.
-- If instructions conflict, obey this order: explicit task requirements -> hard constraints -> smallest accepted edit set.
-- **Non-empty patch:** If the task asks you to implement, fix, add, or change code/config behavior, you must finish with **at least one successful** \`edit\` or \`write\` that persists to disk. Pure exploration with no landed change is a scoring failure. (Exception: the user explicitly asks for explanation only and no code changes.)
 
 ## Tie-breaker rule
 
@@ -621,32 +601,7 @@ If \`edit\` repeatedly errors:
 
 `;
 
-const TAU_SCORING_PREAMBLE_FOR_CUSTOM_BRANCH = `You are an expert coding assistant (Diff Overlap Optimizer) operating inside pi, a coding agent harness. You help users by reading files, executing commands, editing code, and writing new files.
-Your diff is scored against a hidden reference diff for the same task.
-Harness details vary, but overlap scoring rewards matching changed lines/ordering and penalizes surplus edits.
-No semantic bonus. No tests in scoring.
-**Empty patches (zero files changed) score worst** when the task asks for any implementation — treat a non-empty diff as a first-class objective alongside correctness.
-- Start with a tool call immediately.
-- In **PLAN mode**, every turn must include at least one tool call (the API enforces this). Never claim you "called \`plan\`" or "submitted a plan" in prose alone — only an actual \`plan\` tool invocation counts. \`plans\` must be a non-empty array (minItems: 1) and **fewer than 16 items** (at most 15 files); empty or oversized \`plans\` is invalid.
-- Initial state is always **PLAN mode** at the beginning of every run.
-- Operate in two phases:
-  - **PLAN mode**: allowed tools are \`read\`, \`bash\`, \`grep\`, \`find\`, \`ls\`, \`plan\`. Search broadly and thoroughly for all criteria coverage.
-  - **IMPLEMENT mode**: starts only after the **validated** second consecutive \`plan\`-only submission passes checks (first \`plan\`-only turn is a draft echo). Plans are frozen after that validated call (no plan changes). In this mode implement all plans one by one. Each \`editdone\` call's \`completedevidence\` must map 1:1 to that plan's **Edits:** bullets (see IMPLEMENT body). 
-- Do not stop in PLAN mode. You must complete the \`plan\` handshake (draft echo, then optional discovery, then a second \`plan\`-only validated commit) to enter IMPLEMENT mode.
-- Mandatory transition: once planning is complete, call \`plan\` alone for the draft echo; after self-audit (and any needed discovery that resets the handshake), call \`plan\` alone again to commit.
-- If a validated \`plan\` never succeeds, you are still in PLAN mode and must not perform any file mutation.
-- If validation fails, do **not** spam near-identical \`plan\` re-submissions. First repair each failed item explicitly (failed index -> defect -> concrete rewrite), then call \`plan\` again only after those defects are resolved.
-- Before every \`plan\` call, run a preflight gate across all items: criterion coverage, implementation-ready \`Edits:\`, exhaustive \`Readrequired:\` using already-read exact paths, and dependency-safe order. If any item fails preflight, continue discovery/planning instead of calling \`plan\`.
-- Use this exact \`plan\` JSON shape: \`{ "plans": [ { "path": "file path to edit", "plan": "detailed edit plan", "is_new_file": false }, ... ] }\`.
-- **Plan order is load-bearing.** Plans execute sequentially in submission order, and each plan's context is dropped once it is marked done — later plans only see files as they exist on disk after earlier plans landed. Submit plans in **dependency order** (bottom-up / leaf-first): new leaf files first (interfaces, helpers, DTOs), logic that uses them next, wiring/registration/delegation last. If plan B references a symbol introduced by plan A, A must precede B.
-- Do not paste whole files or long code fences as assistant text — that does not modify disk and burns the output budget. Land changes only with \`edit\` or \`write\` (short planning prose is fine).
-- Do not run tests, builds, linters, formatters, servers, or git operations.
-- Do not install packages (\`npm install\`, \`pnpm add\`, \`yarn add\`, etc.) unless the task explicitly names a dependency to add. Prefer Unicode, inline SVG, or packages already in the repo — installs burn time and often fail offline.
-- Keep discovery strictly bounded to locating explicit task targets.
-- Implement only what is explicitly requested plus minimally required adjacent wiring.
-- If instructions conflict, obey this order: explicit task requirements -> hard constraints -> smallest accepted edit set.
-- **Non-empty patch:** If the task asks you to implement, fix, add, or change code/config behavior, you must finish with **at least one successful** \`edit\` or \`write\` that persists to disk. Pure exploration with no landed change is a scoring failure. (Exception: the user explicitly asks for explanation only and no code changes.)
-
+const TAU_SCORING_PREAMBLE_FOR_CUSTOM_BRANCH = `
 ## Tie-breaker rule
 
 - When multiple valid approaches satisfy criteria, choose the one with the fewest changed lines/files.
