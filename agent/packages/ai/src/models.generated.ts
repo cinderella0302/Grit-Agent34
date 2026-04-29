@@ -2540,7 +2540,7 @@ export const MODELS = {
 				cacheWrite: 0,
 			},
 			contextWindow: 1050000,
-			maxTokens: 128000,
+			maxTokens: 130000,
 		} satisfies Model<"azure-openai-responses">,
 		"o1": {
 			id: "o1",
@@ -5986,7 +5986,7 @@ export const MODELS = {
 				cacheWrite: 0,
 			},
 			contextWindow: 1050000,
-			maxTokens: 128000,
+			maxTokens: 130000,
 		} satisfies Model<"openai-responses">,
 		"o1": {
 			id: "o1",
@@ -6297,6 +6297,23 @@ export const MODELS = {
 			},
 			contextWindow: 200000,
 			maxTokens: 128000,
+		} satisfies Model<"anthropic-messages">,
+		"claude-3-5-haiku": {
+			id: "claude-3-5-haiku",
+			name: "Claude Haiku 3.5",
+			api: "anthropic-messages",
+			provider: "opencode",
+			baseUrl: "https://opencode.ai/zen",
+			reasoning: false,
+			input: ["text", "image"],
+			cost: {
+				input: 0.8,
+				output: 4,
+				cacheRead: 0.08,
+				cacheWrite: 1,
+			},
+			contextWindow: 200000,
+			maxTokens: 8192,
 		} satisfies Model<"anthropic-messages">,
 		"claude-haiku-4-5": {
 			id: "claude-haiku-4-5",
@@ -6755,7 +6772,7 @@ export const MODELS = {
 				cacheWrite: 0,
 			},
 			contextWindow: 1050000,
-			maxTokens: 128000,
+			maxTokens: 130000,
 		} satisfies Model<"openai-responses">,
 		"gpt-5.5-pro": {
 			id: "gpt-5.5-pro",
@@ -6974,7 +6991,7 @@ export const MODELS = {
 			cost: {
 				input: 1.74,
 				output: 3.48,
-				cacheRead: 0.0145,
+				cacheRead: 0.145,
 				cacheWrite: 0,
 			},
 			contextWindow: 1000000,
@@ -7096,7 +7113,7 @@ export const MODELS = {
 				cacheRead: 0.08,
 				cacheWrite: 0,
 			},
-			contextWindow: 1000000,
+			contextWindow: 262144,
 			maxTokens: 128000,
 		} satisfies Model<"openai-completions">,
 		"mimo-v2.5-pro": {
@@ -7928,7 +7945,7 @@ export const MODELS = {
 			cost: {
 				input: 0.14,
 				output: 0.28,
-				cacheRead: 0.0028,
+				cacheRead: 0.028,
 				cacheWrite: 0,
 			},
 			contextWindow: 1048576,
@@ -7945,7 +7962,7 @@ export const MODELS = {
 			cost: {
 				input: 0.435,
 				output: 0.87,
-				cacheRead: 0.003625,
+				cacheRead: 0.03625,
 				cacheWrite: 0,
 			},
 			contextWindow: 1048576,
@@ -7982,7 +7999,7 @@ export const MODELS = {
 				cacheRead: 0.024999999999999998,
 				cacheWrite: 0.08333333333333334,
 			},
-			contextWindow: 1048576,
+			contextWindow: 1000000,
 			maxTokens: 8192,
 		} satisfies Model<"openai-completions">,
 		"google/gemini-2.0-flash-lite-001": {
@@ -10187,8 +10204,8 @@ export const MODELS = {
 			reasoning: false,
 			input: ["text"],
 			cost: {
-				input: 0.36,
-				output: 0.39999999999999997,
+				input: 0.12,
+				output: 0.39,
 				cacheRead: 0,
 				cacheWrite: 0,
 			},

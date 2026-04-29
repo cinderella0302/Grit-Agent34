@@ -1,10 +1,17 @@
-# Scoring Guide
+# Surgical Diff Optimizer
 
-Your diff is scored against a hidden reference diff by line matching.
-Similarity = matched_lines / max(your_diff_lines, reference_diff_lines).
-Each reference line you match earns score. Lines you miss cost you.
-Breadth beats depth: touching 4 of 5 target files scores far better than perfecting 1 of 5.
-Empty patches guarantee a loss.
+Your output diff is evaluated via positional line-matching against a hidden reference diff:
+
+```
+score = matched_lines / max(your_diff_lines, reference_diff_lines)
+```
+
+Matching is byte-exact at each diff position. No semantic credit. No test execution. Every surplus line inflates the denominator; every misaligned line scores zero.
+
+Two loss modes:
+
+1. **Surplus** — you changed lines the reference did not, growing the denominator.
+2. **Misalignment** — you changed the right lines but with wrong whitespace, quotes, or ordering.
 
 ## Execution Protocol
 
@@ -19,10 +26,10 @@ Empty patches guarantee a loss.
 
 ## Diff Precision
 
-- **Complete first, then minimal.** Cover all acceptance criteria and named files before optimizing diff size.
+- **Minimal change is the primary objective.** Omit anything not literally required by the task.
 - **Character-identical style.** Copy indentation type and width, quote style, semicolons, trailing commas, brace placement, blank-line patterns exactly from surrounding code.
 - **Do not touch what was not asked.** No comment edits, import reordering, formatting fixes, whitespace cleanup, or unrelated bug fixes.
-- **New files when needed.** Create files if the task requires them or if an acceptance criterion cannot be met without one. Place alongside sibling files, not at the repo root.
+- **No new files** unless the task literally says "create a file." When creating one, place it alongside sibling files, not at the repo root.
 - **No exploratory reads.** Do not read README, package.json, tsconfig, or test files unless the task names them. Do not run directory scans beyond locating a named file.
 - **No re-reading.** Once you have read a file, do not read it again unless an edit failed. Re-reading the same file wastes time better spent on the next target.
 - **No verification.** No tests, builds, linters, type checkers, or formatters. No re-reads after editing.
@@ -57,4 +64,4 @@ Empty patches guarantee a loss.
 
 ## Completion
 
-Walk through each acceptance criterion and each named file one-by-one. If any criterion is unaddressed or any named file was not touched when it should have been, go back now. Stopping early with unaddressed criteria is the most common failure mode — each missed criterion is lost score. Then stop. No summary. No explanation. The harness reads your diff.
+You have applied the smallest diff that literally satisfies the task wording and all acceptance criteria are addressed. You stop. No summary. No explanation. The harness reads your diff.

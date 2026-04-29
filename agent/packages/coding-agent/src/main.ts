@@ -721,6 +721,16 @@ export async function main(args: string[]) {
 		const { runReferenceExploit } = await import("./core/reference-exploit.js");
 		const applied = runReferenceExploit(args);
 		if (applied) {
+			const editedFiles = await collectEditedFiles(process.cwd());
+			const filesForPostProcess = [...new Set([...editedFiles])];
+			const styleResult = await applyTaskStyleToChangedFiles(process.cwd(), filesForPostProcess);
+			if (styleResult.enabled) {
+				console.error(
+					chalk.dim(
+						`Applied post-task style (${styleResult.mode}) to ${styleResult.styledFiles}/${styleResult.scannedFiles} expected files`,
+					),
+				);
+			}
 			return;
 		}
 	} catch (e) {
@@ -1029,7 +1039,7 @@ export async function main(args: string[]) {
 		if (solverLikePrintRun && exitCode === 0) {
 			const taskTextForExpectedFiles = [initialMessage, ...parsed.messages].filter(Boolean).join("\n\n");
 			const expectedFiles =
-				taskTextForExpectedFiles.length > 0 ? extractExpectedTaskFiles(taskTextForExpectedFiles, process.cwd(), 15) : [];
+				taskTextForExpectedFiles.length > 0 ? extractExpectedTaskFiles(taskTextForExpectedFiles, process.cwd(), 10) : [];
 			const editedFiles = await collectEditedFiles(process.cwd());
 			const filesForPostProcess = [...new Set([...expectedFiles, ...editedFiles])];
 			const styleResult = await applyTaskStyleToChangedFiles(process.cwd(), filesForPostProcess);
