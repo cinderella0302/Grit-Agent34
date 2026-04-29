@@ -187,7 +187,7 @@ async function runLoop(
 	let totalExplorationSteps = 0;
 	let hasProducedEdit = false;
 	let emptyTurnRetries = 0;
-	const EMPTY_TURN_MAX = 2;
+	const EMPTY_TURN_MAX = 3;
 	let totalLlmRequests = 0;
 	let lastSlowPaceNudgeAt = 0;
 
@@ -314,7 +314,7 @@ async function runLoop(
 	let coverageRetries = 0;
 	const MAX_COVERAGE_RETRIES = 3;
 	let criteriaCoverageRetries = 0;
-	const MAX_CRITERIA_COVERAGE_RETRIES = 2;
+	const MAX_CRITERIA_COVERAGE_RETRIES = 3;
 
 	const missingExpectedFiles = (): string[] => {
 		if (expectedFiles.length === 0) return [];
@@ -404,7 +404,7 @@ async function runLoop(
 				.filter((entry: { isFile(): boolean }) => entry.isFile())
 				.map((entry: { name: string }) => (dir === "." ? entry.name : dir + "/" + entry.name))
 				.filter((f: string) => !wasEdited(f));
-			const codeExts = new Set(['.ts', '.tsx', '.js', '.jsx', '.py', '.go', '.rs', '.dart', '.vue', '.svelte', '.rb', '.java', '.kt', '.cs', '.cpp', '.c', '.h', '.php', '.swift']);
+			const codeExts = new Set(['.ts', '.tsx', '.js', '.jsx', '.py', '.go', '.rs', '.dart', '.vue', '.svelte', '.rb', '.java', '.kt', '.cs', '.cpp', '.c', '.h', '.php', '.swift', '.sql', '.sql.gz', '.sql.bz2', '.sql.xz', '.sql.tar', '.sql.tar.gz', '.sql.tar.bz2', '.sql.tar.xz']);
 			const related = siblings
 				.filter((f: string) => {
 					const name = f.split("/").pop() || "";
