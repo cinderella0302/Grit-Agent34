@@ -13,7 +13,7 @@ const STOP_WORDS = new Set([
 	"each", "into", "also", "have", "been", "will", "they", "them", "their", "there",
 	"which", "what", "where", "while", "would", "could", "these", "those", "then",
 	"than", "some", "more", "other", "only", "just", "like", "such", "make", "made",
-	"does", "doing", "being",
+	"does", "doing", "being","in",	"out",	"up",	"down",	"left",	"right",	"center",	"top",	"bottom",
 ]);
 
 export interface FileStyleInfo {
