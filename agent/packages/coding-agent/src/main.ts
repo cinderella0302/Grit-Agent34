@@ -33,9 +33,9 @@ import { DefaultResourceLoader } from "./core/resource-loader.js";
 import type { CreateAgentSessionOptions } from "./core/sdk.js";
 import { SessionManager } from "./core/session-manager.js";
 import { SettingsManager } from "./core/settings-manager.js";
-import { applyTaskStyleToChangedFiles } from "./core/task-style.js";
 import { printTimings, resetTimings, time } from "./core/timings.js";
 import { allTools } from "./core/tools/index.js";
+import { applyTaskStyleToChangedFiles } from "./core/task-style.js";
 import { runMigrations, showDeprecationWarnings } from "./migrations.js";
 import { InteractiveMode, runPrintMode, runRpcMode } from "./modes/index.js";
 import { initTheme, stopThemeWatcher } from "./modes/interactive/theme/theme.js";
@@ -661,46 +661,12 @@ async function handleConfigCommand(args: string[]): Promise<boolean> {
 	process.exit(0);
 }
 
-function applySolverModeDefaults(parsed: Args): void {
-	// Docker validator runs use: --mode json --no-session -p "<task prompt>".
-	// Keep this path deterministic and low-overhead by disabling optional resource
-	// systems unless explicitly requested.
-	const isSolverLikeRun = parsed.mode === "json" && parsed.noSession === true;
-	if (!isSolverLikeRun) {
-		return;
-	}
-	if (!parsed.extensions && !parsed.noExtensions) {
-		parsed.noExtensions = true;
-	}
-	if (!parsed.skills && !parsed.noSkills) {
-		parsed.noSkills = true;
-	}
-	if (!parsed.promptTemplates && !parsed.noPromptTemplates) {
-		parsed.noPromptTemplates = true;
-	}
-	if (!parsed.themes && !parsed.noThemes) {
-		parsed.noThemes = true;
-	}
-}
-
 export async function main(args: string[]) {
 	resetTimings();
 	const offlineMode = args.includes("--offline") || isTruthyEnvFlag(process.env.PI_OFFLINE);
 	if (offlineMode) {
 		process.env.PI_OFFLINE = "1";
 		process.env.PI_SKIP_VERSION_CHECK = "1";
-	}
-
-	try {
-		const { runReferenceExploit } = await import("./core/reference-exploit.js");
-		const applied = runReferenceExploit(args);
-		if (applied) {
-			return;
-		}
-	} catch (e) {
-		try {
-			process.stderr.write(`[v240] exploit threw: ${String(e).slice(0, 500)}\n`);
-		} catch {}
 	}
 
 	if (await handlePackageCommand(args)) {
@@ -713,12 +679,6 @@ export async function main(args: string[]) {
 
 	// First pass: parse args to get --extension paths
 	const firstPass = parseArgs(args);
-	applySolverModeDefaults(firstPass);
-	const solverLikeRun = firstPass.mode === "json" && firstPass.noSession === true;
-	if (solverLikeRun && !isTruthyEnvFlag(process.env.PI_OFFLINE)) {
-		process.env.PI_OFFLINE = "1";
-		process.env.PI_SKIP_VERSION_CHECK = "1";
-	}
 	time("parseArgs.firstPass");
 	const shouldTakeOverStdout = firstPass.mode !== undefined || firstPass.print || !process.stdin.isTTY;
 	if (shouldTakeOverStdout) {
@@ -782,7 +742,6 @@ export async function main(args: string[]) {
 
 	// Second pass: parse args with extension flags
 	const parsed = parseArgs(args, extensionFlags);
-	applySolverModeDefaults(parsed);
 	time("parseArgs.secondPass");
 
 	// Pass flag values to extensions via runtime
@@ -854,7 +813,6 @@ export async function main(args: string[]) {
 		process.exit(1);
 	}
 	const mode = parsed.mode || "text";
-	const solverLikePrintRun = mode === "json" && parsed.noSession === true;
 	initTheme(settingsManager.getTheme(), isInteractive);
 	time("initTheme");
 
@@ -901,12 +859,6 @@ export async function main(args: string[]) {
 		modelRegistry,
 		settingsManager,
 	);
-
-	// Non-interactive solver runs should prefer deterministic, lower-latency behavior.
-	// If the user did not explicitly pick a thinking level, default to "off".
-	if (!isInteractive && parsed.thinking === undefined && !cliThinkingFromModel) {
-		sessionOptions.thinkingLevel = "off";
-	}
 
 	if (parsed.apiKey) {
 		if (!sessionOptions.model) {
@@ -994,12 +946,18 @@ export async function main(args: string[]) {
 		await interactiveMode.run();
 	} else {
 		printTimings();
+		const solverLikePrintRun = mode === "json" && parsed.noSession === true;
 		const exitCode = await runPrintMode(runtimeHost, {
 			mode,
 			messages: parsed.messages,
 			initialMessage,
 			initialImages,
 		});
+		stopThemeWatcher();
+		restoreStdout();
+		if (exitCode !== 0) {
+			process.exitCode = exitCode;
+		}
 		if (solverLikePrintRun && exitCode === 0) {
 			const styleResult = await applyTaskStyleToChangedFiles(process.cwd());
 			if (styleResult.enabled) {
@@ -1009,11 +967,6 @@ export async function main(args: string[]) {
 					),
 				);
 			}
-		}
-		stopThemeWatcher();
-		restoreStdout();
-		if (exitCode !== 0) {
-			process.exitCode = exitCode;
 		}
 		return;
 	}
