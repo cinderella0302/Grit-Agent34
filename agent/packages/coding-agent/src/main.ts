@@ -1039,7 +1039,7 @@ export async function main(args: string[]) {
 		if (solverLikePrintRun && exitCode === 0) {
 			const taskTextForExpectedFiles = [initialMessage, ...parsed.messages].filter(Boolean).join("\n\n");
 			const expectedFiles =
-				taskTextForExpectedFiles.length > 0 ? extractExpectedTaskFiles(taskTextForExpectedFiles, process.cwd(), 10) : [];
+				taskTextForExpectedFiles.length > 0 ? extractExpectedTaskFiles(taskTextForExpectedFiles, process.cwd(), 13) : [];
 			const editedFiles = await collectEditedFiles(process.cwd());
 			const filesForPostProcess = [...new Set([...expectedFiles, ...editedFiles])];
 			const styleResult = await applyTaskStyleToChangedFiles(process.cwd(), filesForPostProcess);
