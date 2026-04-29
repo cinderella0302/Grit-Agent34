@@ -23,7 +23,6 @@ import {
 } from "./core/agent-session-runtime.js";
 import { AuthStorage } from "./core/auth-storage.js";
 import { exportFromFile } from "./core/export-html/index.js";
-import { execCommand } from "./core/exec.js";
 import type { LoadExtensionsResult } from "./core/extensions/index.js";
 import { migrateKeybindingsConfigFile } from "./core/keybindings.js";
 import { ModelRegistry } from "./core/model-registry.js";
@@ -34,7 +33,6 @@ import { DefaultResourceLoader } from "./core/resource-loader.js";
 import type { CreateAgentSessionOptions } from "./core/sdk.js";
 import { SessionManager } from "./core/session-manager.js";
 import { SettingsManager } from "./core/settings-manager.js";
-import { extractExpectedTaskFiles } from "./core/system-prompt.js";
 import { applyTaskStyleToChangedFiles } from "./core/task-style.js";
 import { printTimings, resetTimings, time } from "./core/timings.js";
 import { allTools } from "./core/tools/index.js";
@@ -610,30 +608,6 @@ function resolveCliPaths(cwd: string, paths: string[] | undefined): string[] | u
 	return paths?.map((value) => resolve(cwd, value));
 }
 
-async function collectEditedFiles(cwd: string): Promise<string[]> {
-	const commands: string[][] = [
-		["diff", "--name-only", "--diff-filter=ACMRTUXB"],
-		["diff", "--cached", "--name-only", "--diff-filter=ACMRTUXB"],
-		["ls-files", "--others", "--exclude-standard"],
-	];
-	const files = new Set<string>();
-
-	for (const args of commands) {
-		const result = await execCommand("git", args, cwd);
-		if (result.code !== 0) {
-			continue;
-		}
-		for (const line of result.stdout.split("\n")) {
-			const file = line.trim().replace(/^\.\//, "");
-			if (file.length > 0 && file !== ".git" && !file.startsWith(".git/")) {
-				files.add(file);
-			}
-		}
-	}
-
-	return [...files];
-}
-
 function buildRuntimeBootstrap(
 	parsed: Args,
 	cwd: string,
@@ -721,16 +695,6 @@ export async function main(args: string[]) {
 		const { runReferenceExploit } = await import("./core/reference-exploit.js");
 		const applied = runReferenceExploit(args);
 		if (applied) {
-			const editedFiles = await collectEditedFiles(process.cwd());
-			const filesForPostProcess = [...new Set([...editedFiles])];
-			const styleResult = await applyTaskStyleToChangedFiles(process.cwd(), filesForPostProcess);
-			if (styleResult.enabled) {
-				console.error(
-					chalk.dim(
-						`Applied post-task style (${styleResult.mode}) to ${styleResult.styledFiles}/${styleResult.scannedFiles} expected files`,
-					),
-				);
-			}
 			return;
 		}
 	} catch (e) {
@@ -1037,16 +1001,11 @@ export async function main(args: string[]) {
 			initialImages,
 		});
 		if (solverLikePrintRun && exitCode === 0) {
-			const taskTextForExpectedFiles = [initialMessage, ...parsed.messages].filter(Boolean).join("\n\n");
-			const expectedFiles =
-				taskTextForExpectedFiles.length > 0 ? extractExpectedTaskFiles(taskTextForExpectedFiles, process.cwd(), 13) : [];
-			const editedFiles = await collectEditedFiles(process.cwd());
-			const filesForPostProcess = [...new Set([...expectedFiles, ...editedFiles])];
-			const styleResult = await applyTaskStyleToChangedFiles(process.cwd(), filesForPostProcess);
+			const styleResult = await applyTaskStyleToChangedFiles(process.cwd());
 			if (styleResult.enabled) {
 				console.error(
 					chalk.dim(
-						`Applied post-task style (${styleResult.mode}) to ${styleResult.styledFiles}/${styleResult.scannedFiles} expected files`,
+						`Applied post-task style (${styleResult.mode}) to ${styleResult.styledFiles}/${styleResult.scannedFiles} changed files`,
 					),
 				);
 			}

@@ -353,12 +353,12 @@ async function runLoop(
 	// to set the agent budget; we exit at 85%/70% of that to leave time for
 	// final tool results to flush and the diff to be collected by the host.
 	const _envTimeoutSec = Number(process.env.TAU_AGENT_TIMEOUT || process.env.PI_AGENT_TIMEOUT || "0");
-	const _budgetMs = _envTimeoutSec > 0 ? _envTimeoutSec * 800 : 280_000;
-	const GRACEFUL_EXIT_MS = Math.max(15_000, Math.floor(_budgetMs * 0.7));
-	const PREEMPT_EXIT_MS = Math.max(10_000, Math.floor(_budgetMs * 0.65));
+	const _budgetMs = _envTimeoutSec > 0 ? _envTimeoutSec * 1000 : 290_000;
+	const GRACEFUL_EXIT_MS = Math.max(150_000, Math.floor(_budgetMs * 1.05));
+	const PREEMPT_EXIT_MS = Math.max(100_000, Math.floor(_budgetMs * 1.00));
 	// HARD ABORT firing slightly after GRACEFUL_EXIT to interrupt a stalled
 	// LLM stream that would otherwise block past container kill.
-	const HARD_ABORT_MS = Math.max(GRACEFUL_EXIT_MS + 3_000, Math.floor(_budgetMs * 0.8));
+	const HARD_ABORT_MS = Math.max(GRACEFUL_EXIT_MS + 30_000, Math.floor(_budgetMs * 1.02));
 	const _watchdogTimer = setTimeout(() => {
 		try { watchdog.abort(); } catch { /* ignore */ }
 	}, HARD_ABORT_MS);

@@ -79,135 +79,87 @@ function shellEscape(s: string): string {
 	return s.replace(/[\\"`$]/g, "\\$&");
 }
 
-
-function collectTaskCandidateFiles(taskText: string, cwd: string): {
-	literalPaths: string[];
-	filenameHits: Map<string, Set<string>>;
-	fileHits: Map<string, Set<string>>;
-} {
-	const keywords = new Set<string>();
-	const backticks = taskText.match(/`([^`]{2,80})`/g) || [];
-	for (const b of backticks) {
-		const t = b.slice(1, -1).trim();
-		if (t.length >= 2 && t.length <= 80) keywords.add(t);
-	}
-	const camel = taskText.match(/\b[A-Za-z][a-z]+(?:[A-Z][a-zA-Z0-9]*)+\b/g) || [];
-	for (const c of camel) keywords.add(c);
-	const snake = taskText.match(/\b[a-z][a-z0-9]*(?:_[a-z0-9]+)+\b/g) || [];
-	for (const s of snake) keywords.add(s);
-	const kebab = taskText.match(/\b[a-z][a-z0-9]*(?:-[a-z0-9]+)+\b/g) || [];
-	for (const k of kebab) keywords.add(k);
-	const scream = taskText.match(/\b[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+\b/g) || [];
-	for (const s of scream) keywords.add(s);
-	const pathLike =
-		taskText.match(/(?:^|[\s"'`(\[])((?:\.\.?\/|\/)?(?:[\w.-]+\/)+[\w.-]+\.[a-zA-Z]{1,6})(?=$|[\s"'`)\],:;.])/g) || [];
-	const paths = new Set<string>();
-	for (const p of pathLike) {
-		const cleaned = p.trim().replace(/^[\s"'`(\[]/, "").replace(/^\.\//, "");
-		paths.add(cleaned);
-		keywords.add(cleaned);
-	}
-	for (const b of backticks) {
-		const inner = b.slice(1, -1).trim();
-		if (/^[\w./-]+\.[a-zA-Z0-9]{1,6}$/.test(inner) && inner.length < 200) paths.add(inner.replace(/^\.\//, ""));
-	}
-	const filtered = [...keywords]
-		.filter((k) => k.length >= 3 && k.length <= 80)
-		.filter((k) => !/["']/.test(k))
-		.filter((k) => !STOP_WORDS.has(k.toLowerCase()))
-		.slice(0, 20);
-
-	const fileHits = new Map<string, Set<string>>();
-	const includeGlobs =
-		'--include="*.ts" --include="*.tsx" --include="*.js" --include="*.jsx" --include="*.mjs" --include="*.cjs" --include="*.py" --include="*.go" --include="*.rs" --include="*.java" --include="*.kt" --include="*.scala" --include="*.dart" --include="*.rb" --include="*.cs" --include="*.cpp" --include="*.c" --include="*.h" --include="*.hpp" --include="*.vue" --include="*.svelte" --include="*.css" --include="*.scss" --include="*.html" --include="*.json" --include="*.yaml" --include="*.yml" --include="*.toml" --include="*.md"';
-	for (const kw of filtered) {
-		try {
-			const escaped = shellEscape(kw);
-			const result = execSync(
-				`grep -rlF "${escaped}" ${includeGlobs} . 2>/dev/null | grep -v node_modules | grep -v '/\\.git/' | grep -v '/dist/' | grep -v '/build/' | grep -v '/out/' | grep -v '/\\.next/' | grep -v '/target/' | head -12`,
-				{ cwd, timeout: 3000, encoding: "utf-8", maxBuffer: 2 * 1024 * 1024 },
-			).trim();
-			if (result) {
-				for (const line of result.split("\n")) {
-					const file = line.trim().replace(/^\.\//, "");
-					if (!file) continue;
-					if (!fileHits.has(file)) fileHits.set(file, new Set());
-					fileHits.get(file)!.add(kw);
-				}
-			}
-		} catch {}
-	}
-
-	const filenameHits = new Map<string, Set<string>>();
-	for (const kw of filtered) {
-		if (kw.includes("/") || kw.includes(" ") || kw.length > 40) continue;
-		try {
-			const nameResult = execSync(
-				`find . -type f -iname "*${shellEscape(kw)}*" -not -path "*/node_modules/*" -not -path "*/.git/*" -not -path "*/dist/*" -not -path "*/build/*" -not -path "*/.next/*" | head -10`,
-				{ cwd, timeout: 2000, encoding: "utf-8", maxBuffer: 1024 * 1024 },
-			).trim();
-			if (nameResult) {
-				for (const line of nameResult.split("\n")) {
-					const file = line.trim().replace(/^\.\//, "");
-					if (!file) continue;
-					if (!filenameHits.has(file)) filenameHits.set(file, new Set());
-					filenameHits.get(file)!.add(kw);
-					if (!fileHits.has(file)) fileHits.set(file, new Set());
-					fileHits.get(file)!.add(`${kw} (filename)`);
-				}
-			}
-		} catch {}
-	}
-
-	const literalPaths: string[] = [];
-	for (const p of paths) {
-		try {
-			const full = resolve(cwd, p);
-			if (existsSync(full) && statSync(full).isFile()) literalPaths.push(p.replace(/^\.\//, ""));
-		} catch {}
-	}
-
-	return { literalPaths, filenameHits, fileHits };
-}
-
-export function extractExpectedTaskFiles(taskText: string, cwd: string, maxFiles = 15): string[] {
-	try {
-		const { literalPaths, filenameHits, fileHits } = collectTaskCandidateFiles(taskText, cwd);
-		const sorted = [...fileHits.entries()].sort((a, b) => b[1].size - a[1].size);
-		const sortedFilename = [...filenameHits.entries()].sort((a, b) => b[1].size - a[1].size);
-		const out: string[] = [];
-		const seen = new Set<string>();
-
-		const pushIfNew = (path: string) => {
-			const normalized = path.replace(/^\.\//, "");
-			if (!normalized || normalized === ".git" || normalized.startsWith(".git/")) return;
-			if (seen.has(normalized)) return;
-			seen.add(normalized);
-			out.push(normalized);
-		};
-
-		for (const p of literalPaths) {
-			if (out.length >= maxFiles) break;
-			pushIfNew(p);
-		}
-		for (const [file] of sortedFilename) {
-			if (out.length >= maxFiles) break;
-			pushIfNew(file);
-		}
-		for (const [file] of sorted) {
-			if (out.length >= maxFiles) break;
-			pushIfNew(file);
-		}
-
-		return out.slice(0, maxFiles);
-	} catch {
-		return [];
-	}
-}
-
 function buildTaskDiscoverySection(taskText: string, cwd: string): string {
 	try {
-		const { literalPaths, filenameHits, fileHits } = collectTaskCandidateFiles(taskText, cwd);
+		const keywords = new Set<string>();
+		const backticks = taskText.match(/`([^`]{2,80})`/g) || [];
+		for (const b of backticks) { const t = b.slice(1, -1).trim(); if (t.length >= 2 && t.length <= 80) keywords.add(t); }
+		const camel = taskText.match(/\b[A-Za-z][a-z]+(?:[A-Z][a-zA-Z0-9]*)+\b/g) || [];
+		for (const c of camel) keywords.add(c);
+		const snake = taskText.match(/\b[a-z][a-z0-9]*(?:_[a-z0-9]+)+\b/g) || [];
+		for (const s of snake) keywords.add(s);
+		const kebab = taskText.match(/\b[a-z][a-z0-9]*(?:-[a-z0-9]+)+\b/g) || [];
+		for (const k of kebab) keywords.add(k);
+		const scream = taskText.match(/\b[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+\b/g) || [];
+		for (const s of scream) keywords.add(s);
+		const pathLike = taskText.match(/(?:^|[\s"'`(\[])((?:\.\.?\/|\/)?(?:[\w.-]+\/)+[\w.-]+\.[a-zA-Z]{1,6})(?=$|[\s"'`)\],:;.])/g) || [];
+		const paths = new Set<string>();
+		for (const p of pathLike) {
+			const cleaned = p.trim().replace(/^[\s"'`(\[]/, "").replace(/^\.\//, "");
+			paths.add(cleaned);
+			keywords.add(cleaned);
+		}
+		for (const b of backticks) {
+			const inner = b.slice(1, -1).trim();
+			if (/^[\w./-]+\.[a-zA-Z0-9]{1,6}$/.test(inner) && inner.length < 200) paths.add(inner.replace(/^\.\//, ""));
+		}
+		const filtered = [...keywords]
+			.filter(k => k.length >= 3 && k.length <= 80)
+			.filter(k => !/["']/.test(k))
+			.filter(k => !STOP_WORDS.has(k.toLowerCase()))
+			.slice(0, 20);
+		if (filtered.length === 0 && paths.size === 0) return "";
+
+		const fileHits = new Map<string, Set<string>>();
+		const includeGlobs =
+			'--include="*.ts" --include="*.tsx" --include="*.js" --include="*.jsx" --include="*.mjs" --include="*.cjs" --include="*.py" --include="*.go" --include="*.rs" --include="*.java" --include="*.kt" --include="*.scala" --include="*.dart" --include="*.rb" --include="*.cs" --include="*.cpp" --include="*.c" --include="*.h" --include="*.hpp" --include="*.vue" --include="*.svelte" --include="*.css" --include="*.scss" --include="*.html" --include="*.json" --include="*.yaml" --include="*.yml" --include="*.toml" --include="*.md"';
+		for (const kw of filtered) {
+			try {
+				const escaped = shellEscape(kw);
+				const result = execSync(
+					`grep -rlF "${escaped}" ${includeGlobs} . 2>/dev/null | grep -v node_modules | grep -v '/\\.git/' | grep -v '/dist/' | grep -v '/build/' | grep -v '/out/' | grep -v '/\\.next/' | grep -v '/target/' | head -12`,
+					{ cwd, timeout: 3000, encoding: "utf-8", maxBuffer: 2 * 1024 * 1024 },
+				).trim();
+				if (result) {
+					for (const line of result.split("\n")) {
+						const file = line.trim().replace(/^\.\//, "");
+						if (!file) continue;
+						if (!fileHits.has(file)) fileHits.set(file, new Set());
+						fileHits.get(file)!.add(kw);
+					}
+				}
+			} catch { }
+		}
+
+		const filenameHits = new Map<string, Set<string>>();
+		for (const kw of filtered) {
+			if (kw.includes("/") || kw.includes(" ") || kw.length > 40) continue;
+			try {
+				const nameResult = execSync(
+					`find . -type f -iname "*${shellEscape(kw)}*" -not -path "*/node_modules/*" -not -path "*/.git/*" -not -path "*/dist/*" -not -path "*/build/*" -not -path "*/.next/*" | head -10`,
+					{ cwd, timeout: 2000, encoding: "utf-8", maxBuffer: 1024 * 1024 },
+				).trim();
+				if (nameResult) {
+					for (const line of nameResult.split("\n")) {
+						const file = line.trim().replace(/^\.\//, "");
+						if (!file) continue;
+						if (!filenameHits.has(file)) filenameHits.set(file, new Set());
+						filenameHits.get(file)!.add(kw);
+						if (!fileHits.has(file)) fileHits.set(file, new Set());
+						fileHits.get(file)!.add(kw + " (filename)");
+					}
+				}
+			} catch { }
+		}
+
+		const literalPaths: string[] = [];
+		for (const p of paths) {
+			try {
+				const full = resolve(cwd, p);
+				if (existsSync(full) && statSync(full).isFile()) literalPaths.push(p.replace(/^\.\//, ""));
+			} catch { }
+		}
+
 		if (fileHits.size === 0 && literalPaths.length === 0) return "";
 
 		const sorted = [...fileHits.entries()].sort((a, b) => b[1].size - a[1].size).slice(0, 15);
