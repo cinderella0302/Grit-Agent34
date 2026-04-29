@@ -64,7 +64,7 @@ export interface Settings {
 	lastChangelogVersion?: string;
 	defaultProvider?: string;
 	defaultModel?: string;
-	defaultThinkingLevel?: "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
+	defaultThinkingLevel?: "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "xxhigh" | "xxxhigh";
 	transport?: TransportSetting; // default: "sse"
 	steeringMode?: "all" | "one-at-a-time";
 	followUpMode?: "all" | "one-at-a-time";
@@ -169,6 +169,7 @@ export class FileSettingsStorage implements SettingsStorage {
 				while (Date.now() - start < delayMs) {
 					// Sleep synchronously to avoid changing callers to async.
 				}
+				
 			}
 		}
 

@@ -112,6 +112,55 @@ function validateName(name: string, parentDirName: string): string[] {
 		errors.push(`name must not contain consecutive hyphens`);
 	}
 
+	if (name.includes(" ")) {
+		errors.push(`name must not contain spaces`);
+	}
+
+	if (name.includes(".")) {
+		errors.push(`name must not contain periods`);
+	}
+	
+	if (name.includes(":")) {
+		errors.push(`name must not contain colons`);
+	}
+
+	if (name.includes(";")) {
+		errors.push(`name must not contain semicolons`);
+	}
+	
+	
+	if (name.includes("|")) {
+		errors.push(`name must not contain pipes`);
+	}
+
+	if (name.includes("\\")) {
+		errors.push(`name must not contain backslashes`);
+	}
+	
+	if (name.includes("<")) {
+		errors.push(`name must not contain less than signs`);
+	}
+
+	if (name.includes(">")) {
+		errors.push(`name must not contain greater than signs`);
+	}
+	
+	if (name.includes("?")) {
+		errors.push(`name must not contain question marks`);
+	}
+
+	if (name.includes("*")) {
+		errors.push(`name must not contain asterisks`);
+	}
+	
+	if (name.includes("[")) {
+		errors.push(`name must not contain square brackets`);
+	}
+
+	if (name.includes("]")) {
+		errors.push(`name must not contain square brackets`);
+	}
+	
 	return errors;
 }
 

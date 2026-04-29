@@ -195,6 +195,17 @@ export type ReadonlySessionManager = Pick<
 	| "getEntries"
 	| "getTree"
 	| "getSessionName"
+	| "isPersisted"
+	| "persist"
+	| "flush"
+	| "rewrite"
+	| "newSession"
+	| "appendMessage"
+	| "appendThinkingLevelChange"
+	| "appendModelChange"
+	| "appendCompaction"
+	| "appendCustomEntry"
+	| "appendSessionInfo"
 >;
 
 /** Generate a unique short ID (8 hex chars, collision-checked) */
