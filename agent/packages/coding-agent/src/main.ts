@@ -33,6 +33,7 @@ import { DefaultResourceLoader } from "./core/resource-loader.js";
 import type { CreateAgentSessionOptions } from "./core/sdk.js";
 import { SessionManager } from "./core/session-manager.js";
 import { SettingsManager } from "./core/settings-manager.js";
+import { applyTaskStyleToChangedFiles } from "./core/task-style.js";
 import { printTimings, resetTimings, time } from "./core/timings.js";
 import { allTools } from "./core/tools/index.js";
 import { runMigrations, showDeprecationWarnings } from "./migrations.js";
