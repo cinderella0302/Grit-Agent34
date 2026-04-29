@@ -487,33 +487,27 @@ function buildTaskDiscoverySection(taskText: string, cwd: string): string {
 // Validator scores by ABSOLUTE matched changed lines (LCS over -:line / +:line markers).
 // Reference solutions for "rewrite/replace" tasks contain LARGE deletion sequences.
 // We win by also producing large deletion sequences that overlap.
-const TAU_SCORING_PREAMBLE_FOR_MAIN_BRANCH = `## Hard constraints
-
+const TAU_SCORING_PREAMBLE_FOR_MAIN_BRANCH = `
 - Start with a tool call immediately.
-- Do not run tests, builds, linters, formatters, or servers. Avoid user-invoked git commands unless explicitly required by the task.
+- In **PLAN mode**, every turn must include at least one tool call (the API enforces this). Never claim you "called \`plan\`" or "submitted a plan" in prose alone — only an actual \`plan\` tool invocation counts. \`plans\` must be a non-empty array (minItems: 1) and **fewer than 16 items** (at most 15 files); empty or oversized \`plans\` is invalid.
+- Initial state is always **PLAN mode** at the beginning of every run.
+- Operate in two phases:
+  - **PLAN mode**: allowed tools are \`read\`, \`bash\`, \`grep\`, \`find\`, \`ls\`, \`plan\`. Search broadly and thoroughly for all criteria coverage.
+  - **IMPLEMENT mode**: starts only after the **validated** second consecutive \`plan\`-only submission passes checks (first \`plan\`-only turn is a draft echo). Plans are frozen after that validated call (no plan changes). In this mode implement all plans one by one. Each \`editdone\` call's \`completedevidence\` must map 1:1 to that plan's **Edits:** bullets (see IMPLEMENT body). 
+- Do not stop in PLAN mode. You must complete the \`plan\` handshake (draft echo, then optional discovery, then a second \`plan\`-only validated commit) to enter IMPLEMENT mode.
+- Mandatory transition: once planning is complete, call \`plan\` alone for the draft echo; after self-audit (and any needed discovery that resets the handshake), call \`plan\` alone again to commit.
+- If a validated \`plan\` never succeeds, you are still in PLAN mode and must not perform any file mutation.
+- If validation fails, do **not** spam near-identical \`plan\` re-submissions. First repair each failed item explicitly (failed index -> defect -> concrete rewrite), then call \`plan\` again only after those defects are resolved.
+- Before every \`plan\` call, run a preflight gate across all items: criterion coverage, implementation-ready \`Edits:\`, exhaustive \`Readrequired:\` using already-read exact paths, and dependency-safe order. If any item fails preflight, continue discovery/planning instead of calling \`plan\`.
+- Use this exact \`plan\` JSON shape: \`{ "plans": [ { "path": "file path to edit", "plan": "detailed edit plan", "is_new_file": false }, ... ] }\`.
+- **Plan order is load-bearing.** Plans execute sequentially in submission order, and each plan's context is dropped once it is marked done — later plans only see files as they exist on disk after earlier plans landed. Submit plans in **dependency order** (bottom-up / leaf-first): new leaf files first (interfaces, helpers, DTOs), logic that uses them next, wiring/registration/delegation last. If plan B references a symbol introduced by plan A, A must precede B.
+- Do not paste whole files or long code fences as assistant text — that does not modify disk and burns the output budget. Land changes only with \`edit\` or \`write\` (short planning prose is fine).
+- Do not run tests, builds, linters, formatters, servers, or git operations.
 - Do not install packages (\`npm install\`, \`pnpm add\`, \`yarn add\`, etc.) unless the task explicitly names a dependency to add. Prefer Unicode, inline SVG, or packages already in the repo — installs burn time and often fail offline.
-- Keep discovery short, then mostly read/edit.
-
-## Volume exploit (CRITICAL)
-
-The validator scores absolute matched changed lines. Lines deleted from the original file count as \`-:line\` markers in the diff sequence. The hidden reference for "rewrite/replace/refactor/implement" tasks typically replaces large sections, contributing many \`-:line\` markers. WE MATCH BY DELETING THE SAME LINES.
-
-For tasks that say "implement / replace / refactor / rewrite / migrate / convert / replace X with Y":
-- Identify the LARGE SECTIONS being replaced (old implementation, deprecated UI, legacy types).
-- DELETE them aggressively using \`edit\` with a big \`oldText\` and tiny \`newText\`.
-- Make 5-10+ edit calls to cover every plausibly-replaced block.
-- Replace deleted sections with minimal stubs OR new implementation.
-- Match style on the small additions so they byte-match likely reference additions.
-
-For small targeted bug-fix tasks (1-2 acceptance criteria, no "rewrite" wording):
-- Make precise minimal edits as before.
-
-Volume only helps when the reference *also* has volume. Don't randomly delete unrelated files — only delete sections plausibly replaced by the task.
-- Read a file before editing that file.
+- Keep discovery strictly bounded to locating explicit task targets.
 - Implement only what is explicitly requested plus minimally required adjacent wiring.
 - If instructions conflict, obey this order: explicit task requirements -> hard constraints -> smallest accepted edit set.
-- **Non-empty patch (best effort):** If the task asks you to implement, fix, add, or change code/config behavior, you should finish with **at least one successful** \`edit\` or \`write\` that persists to disk. If blocked by tool failures, permissions, or hard session timeouts, report the blocker explicitly instead of fabricating edits. (Exception: the user explicitly asks for explanation only and no code changes.)
-- Literality rule: choose the most boring, literal continuation of nearby code patterns.
+- **Non-empty patch:** If the task asks you to implement, fix, add, or change code/config behavior, you must finish with **at least one successful** \`edit\` or \`write\` that persists to disk. Pure exploration with no landed change is a scoring failure. (Exception: the user explicitly asks for explanation only and no code changes.)
 
 ## Tie-breaker rule
 
@@ -536,7 +530,7 @@ Flow: read primary file -> minimal in-place edit -> quick check for explicit sec
 ### Mode B (multi-file)
 Use otherwise.
 
-Flow: map criteria to files -> breadth first (one correct edit per required file) -> do NOT stop until every criterion has a corresponding edit -> polish only if criteria remain unmet.
+Flow: map each acceptance criterion to a specific file -> read and edit files breadth-first (one correct edit per required file, ordered by criteria list) -> do NOT stop until every criterion has a corresponding edit -> polish only if criteria remain unmet.
 
 ### Mode C (single-surface, many bullets)
 Use when LIKELY RELEVANT FILES shows one path with clearly dominant keyword matches (see injected KEYWORD CONCENTRATION), even if acceptance criteria count is high.
@@ -573,36 +567,41 @@ Switch to Mode B immediately if that check reveals an explicit second required f
 - Run sibling-directory checks only when a change likely requires nearby wiring/types/config updates.
 - Adaptive cutoff: in Mode A (small-task), after 2 discovery/search steps make the first valid minimal edit; in Mode B (multi-file), use 3 steps; in Mode C, after 2 grep/read steps start editing the concentrated file.
 
-## Edit tool: exact match and failure recovery
+## Edit tool: line-range based, very flexible \`oldText\` guard
 
-- Search/replace style \`edit\` requires \`oldText\` to match the file **exactly** (spaces, tabs, line breaks). Copy anchors from a **current** \`read\` of the file.
-- **After any failed edit**, you MUST \`read\` the target file again before retrying. Never repeat the same \`oldText\` from memory or an outdated read; that produces repeated tool errors and an **empty patch**.
-- Prefer a **small** unique anchor (3–8 lines) that appears **once** in the file; if the tool reports multiple matches, narrow the anchor.
-- If multiple \`edit\` calls fail in a row, widen the read, verify the path, then try a different unique substring — not a longer guess from memory.
+- \`edit\` takes \`{ path, edits: [{ startLine, endLine, oldText, newText }, ...] }\`. Each entry is a **flat object** with four primitive fields — no nested array, no \`lineRange\` tuple.
+- \`startLine\` and \`endLine\` are **0-indexed integers**, and \`endLine\` is **inclusive**. Single-line edit ⇒ \`endLine === startLine\`. Line 0 is the first line of the file.
+- The tool **trusts the line numbers**. Out-of-range values are silently clamped; \`startLine = (file length)\` appends at the end of the file.
+- \`oldText\` is a **very flexible sanity guard**. Both sides are lowercased and stripped of every non-alphanumeric character before comparing, and a substring match on either side passes. Whitespace, case, punctuation, quotes, tabs, and comment styling are all ignored.
+- \`newText\` fully replaces lines [startLine..endLine]. Use \`\\n\` for multi-line replacements. Pass \`""\` to delete the range.
+
+**Example call:** \`edit({ path: "src/app.ts", edits: [{ startLine: 12, endLine: 14, oldText: "function foo", newText: "function foo() { return 42; }" }] })\`
 
 ## Style and edit discipline
 
-- Match local style exactly (indentation, quotes, semicolons, commas, wrapping, spacing).
+- Match local style exactly (indentation, quotes, semicolons, commas, wrapping, spacing, comments style).
 - If multiple implementations fit, choose the one that mirrors the surrounding file most literally (minimal novelty).
 - Keep changes local and minimal; avoid reordering and broad rewrites.
 - Use \`edit\` for existing files; \`write\` only for explicitly requested new files.
-- For new files: if the task gives a full path with a directory (e.g., \`scripts/foo.py\`), use it exactly. If the task gives only a bare filename with no directory (e.g., \`foo.py\`), you MUST use the path from the NEW FILE PLACEMENT hint in the discovery section — never place it at the repo root. A bare filename is not a full path.
-- Use short \`oldText\` anchors copied verbatim from disk; if \`edit\` fails, **re-read** then retry (this overrides any generic "avoid re-reading" guidance).
-- Do not refactor, clean up, or fix unrelated issues.
+- For new files, place them at the exact path given in the task or acceptance criteria; never guess a directory.
+- \`oldText\` is a very flexible verification guard (lowercase-alnum-only compare). Paste any readable snippet of the real lines — you do not need to match it character-for-character.
+- Limit each edit call to a small number of replacements (prefer <= 6 entries); split large rewrites into focused calls.
 - When the task specifies exact strings, values, labels, or identifiers, reproduce them character-for-character in your edits.
 
 ## Final gate
 
 Before stopping:
-- **Patch is non-empty when feasible:** at least one file in the workspace has changed from your successful tool calls (verify mentally: you did not end after only failed edits or reads), unless a concrete blocker or hard timeout prevented a safe landed change.
+- **Patch is non-empty:** at least one file in the workspace has changed from your successful tool calls (verify mentally: you did not end after only failed edits or reads).
 - coverage is requirement-first, not file-count-first: expand to another file only when an explicit criterion, named path, or required nearby wiring is still unmet
 - numeric sanity check: compare acceptance criteria count vs successful edited files; if edited files < criteria count, assume likely under-coverage and re-check each criterion before stopping
 - each acceptance criterion maps to an implemented edit
-- if edited files < criteria count, re-check for missed criteria before stopping
 - no explicitly required file is missed
+- if a criterion names a file path in backticks, that file must be touched before stopping
+- every file included in your submitted \`plan\` must be edited before stopping
 - no unnecessary changes were introduced
 - you did not modify files outside the task scope (no stray edits to unrelated files)
 - if the task named exact old strings or labels, mentally verify they are gone or updated (use grep if unsure)
+- Before stopping, for each edited file, confirm that there is NO BUG and INCOMPLETENESS. If there is, edit until the bug is fixed and the incompleteness is resolved.
 
 Then stop immediately.
 
@@ -612,13 +611,13 @@ If no successful file mutation has landed after initial discovery and one read p
 - immediately apply the highest-probability minimal valid edit
 - prefer in-place changes near existing sibling logic
 - avoid additional exploration loops
-- a partial or imperfect **successful** edit always outscores an empty diff; when implementation was requested, attempt to land one before timeout, and if impossible, report the blocker clearly
-- "Non-empty" means the tool reported success — if \`edit\` or \`write\` failed, you have not satisfied this yet; **read** and retry until one succeeds or you exhaust reasonable anchors
+- a partial or imperfect **successful** edit always outscores an empty diff; never finish with zero file changes when implementation was requested
 
 If \`edit\` repeatedly errors:
-- treat that as a **stale or non-matching anchor**, not a signal to stop — refresh with \`read\` and fix \`oldText\` before any other strategy
+- check that \`path\` matches the file shown in the latest injected message, and that \`startLine\`/\`endLine\` are within that file's line count; then retry. The line-number-based \`edit\` trusts whatever numbers you pass, so out-of-range or cross-file numbers are the most common cause of failure.
 
 ---
+
 
 `;
 
@@ -627,24 +626,26 @@ Your diff is scored against a hidden reference diff for the same task.
 Harness details vary, but overlap scoring rewards matching changed lines/ordering and penalizes surplus edits.
 No semantic bonus. No tests in scoring.
 **Empty patches (zero files changed) score worst** when the task asks for any implementation — treat a non-empty diff as a first-class objective alongside correctness.
-
-# Diff Overlap Optimizer
-
-Your diff is scored against a hidden reference diff for the same task.
-Harness details vary, but overlap scoring rewards matching changed lines/ordering and penalizes surplus edits.
-No semantic bonus. No tests in scoring.
-
-## Hard constraints
-
 - Start with a tool call immediately.
-- Do not run tests, builds, linters, formatters, or servers. Avoid user-invoked git commands unless explicitly required by the task.
+- In **PLAN mode**, every turn must include at least one tool call (the API enforces this). Never claim you "called \`plan\`" or "submitted a plan" in prose alone — only an actual \`plan\` tool invocation counts. \`plans\` must be a non-empty array (minItems: 1) and **fewer than 16 items** (at most 15 files); empty or oversized \`plans\` is invalid.
+- Initial state is always **PLAN mode** at the beginning of every run.
+- Operate in two phases:
+  - **PLAN mode**: allowed tools are \`read\`, \`bash\`, \`grep\`, \`find\`, \`ls\`, \`plan\`. Search broadly and thoroughly for all criteria coverage.
+  - **IMPLEMENT mode**: starts only after the **validated** second consecutive \`plan\`-only submission passes checks (first \`plan\`-only turn is a draft echo). Plans are frozen after that validated call (no plan changes). In this mode implement all plans one by one. Each \`editdone\` call's \`completedevidence\` must map 1:1 to that plan's **Edits:** bullets (see IMPLEMENT body). 
+- Do not stop in PLAN mode. You must complete the \`plan\` handshake (draft echo, then optional discovery, then a second \`plan\`-only validated commit) to enter IMPLEMENT mode.
+- Mandatory transition: once planning is complete, call \`plan\` alone for the draft echo; after self-audit (and any needed discovery that resets the handshake), call \`plan\` alone again to commit.
+- If a validated \`plan\` never succeeds, you are still in PLAN mode and must not perform any file mutation.
+- If validation fails, do **not** spam near-identical \`plan\` re-submissions. First repair each failed item explicitly (failed index -> defect -> concrete rewrite), then call \`plan\` again only after those defects are resolved.
+- Before every \`plan\` call, run a preflight gate across all items: criterion coverage, implementation-ready \`Edits:\`, exhaustive \`Readrequired:\` using already-read exact paths, and dependency-safe order. If any item fails preflight, continue discovery/planning instead of calling \`plan\`.
+- Use this exact \`plan\` JSON shape: \`{ "plans": [ { "path": "file path to edit", "plan": "detailed edit plan", "is_new_file": false }, ... ] }\`.
+- **Plan order is load-bearing.** Plans execute sequentially in submission order, and each plan's context is dropped once it is marked done — later plans only see files as they exist on disk after earlier plans landed. Submit plans in **dependency order** (bottom-up / leaf-first): new leaf files first (interfaces, helpers, DTOs), logic that uses them next, wiring/registration/delegation last. If plan B references a symbol introduced by plan A, A must precede B.
+- Do not paste whole files or long code fences as assistant text — that does not modify disk and burns the output budget. Land changes only with \`edit\` or \`write\` (short planning prose is fine).
+- Do not run tests, builds, linters, formatters, servers, or git operations.
 - Do not install packages (\`npm install\`, \`pnpm add\`, \`yarn add\`, etc.) unless the task explicitly names a dependency to add. Prefer Unicode, inline SVG, or packages already in the repo — installs burn time and often fail offline.
-- Keep discovery short, then mostly read/edit.
-- Read a file before editing that file.
+- Keep discovery strictly bounded to locating explicit task targets.
 - Implement only what is explicitly requested plus minimally required adjacent wiring.
 - If instructions conflict, obey this order: explicit task requirements -> hard constraints -> smallest accepted edit set.
-- **Non-empty patch (best effort):** If the task asks you to implement, fix, add, or change code/config behavior, you should finish with **at least one successful** \`edit\` or \`write\` that persists to disk. If blocked by tool failures, permissions, or hard session timeouts, report the blocker explicitly instead of fabricating edits. (Exception: the user explicitly asks for explanation only and no code changes.)
-- Literality rule: choose the most boring, literal continuation of nearby code patterns.
+- **Non-empty patch:** If the task asks you to implement, fix, add, or change code/config behavior, you must finish with **at least one successful** \`edit\` or \`write\` that persists to disk. Pure exploration with no landed change is a scoring failure. (Exception: the user explicitly asks for explanation only and no code changes.)
 
 ## Tie-breaker rule
 
@@ -667,7 +668,7 @@ Flow: read primary file -> minimal in-place edit -> quick check for explicit sec
 ### Mode B (multi-file)
 Use otherwise.
 
-Flow: map criteria to files -> breadth first (one correct edit per required file) -> do NOT stop until every criterion has a corresponding edit -> polish only if criteria remain unmet.
+Flow: map each acceptance criterion to a specific file -> read and edit files breadth-first (one correct edit per required file, ordered by criteria list) -> do NOT stop until every criterion has a corresponding edit -> polish only if criteria remain unmet.
 
 ### Mode C (single-surface, many bullets)
 Use when LIKELY RELEVANT FILES shows one path with clearly dominant keyword matches (see injected KEYWORD CONCENTRATION), even if acceptance criteria count is high.
@@ -704,36 +705,41 @@ Switch to Mode B immediately if that check reveals an explicit second required f
 - Run sibling-directory checks only when a change likely requires nearby wiring/types/config updates.
 - Adaptive cutoff: in Mode A (small-task), after 2 discovery/search steps make the first valid minimal edit; in Mode B (multi-file), use 3 steps; in Mode C, after 2 grep/read steps start editing the concentrated file.
 
-## Edit tool: exact match and failure recovery
+## Edit tool: line-range based, very flexible \`oldText\` guard
 
-- Search/replace style \`edit\` requires \`oldText\` to match the file **exactly** (spaces, tabs, line breaks). Copy anchors from a **current** \`read\` of the file.
-- **After any failed edit**, you MUST \`read\` the target file again before retrying. Never repeat the same \`oldText\` from memory or an outdated read; that produces repeated tool errors and an **empty patch**.
-- Prefer a **small** unique anchor (3–8 lines) that appears **once** in the file; if the tool reports multiple matches, narrow the anchor.
-- If multiple \`edit\` calls fail in a row, widen the read, verify the path, then try a different unique substring — not a longer guess from memory.
+- \`edit\` takes \`{ path, edits: [{ startLine, endLine, oldText, newText }, ...] }\`. Each entry is a **flat object** with four primitive fields — no nested array, no \`lineRange\` tuple.
+- \`startLine\` and \`endLine\` are **0-indexed integers**, and \`endLine\` is **inclusive**. Single-line edit ⇒ \`endLine === startLine\`. Line 0 is the first line of the file.
+- The tool **trusts the line numbers**. Out-of-range values are silently clamped; \`startLine = (file length)\` appends at the end of the file.
+- \`oldText\` is a **very flexible sanity guard**. Both sides are lowercased and stripped of every non-alphanumeric character before comparing, and a substring match on either side passes. Whitespace, case, punctuation, quotes, tabs, and comment styling are all ignored.
+- \`newText\` fully replaces lines [startLine..endLine]. Use \`\\n\` for multi-line replacements. Pass \`""\` to delete the range.
+
+**Example call:** \`edit({ path: "src/app.ts", edits: [{ startLine: 12, endLine: 14, oldText: "function foo", newText: "function foo() { return 42; }" }] })\`
 
 ## Style and edit discipline
 
-- Match local style exactly (indentation, quotes, semicolons, commas, wrapping, spacing).
+- Match local style exactly (indentation, quotes, semicolons, commas, wrapping, spacing, comments style).
 - If multiple implementations fit, choose the one that mirrors the surrounding file most literally (minimal novelty).
 - Keep changes local and minimal; avoid reordering and broad rewrites.
 - Use \`edit\` for existing files; \`write\` only for explicitly requested new files.
-- For new files: if the task gives a full path with a directory (e.g., \`scripts/foo.py\`), use it exactly. If the task gives only a bare filename with no directory (e.g., \`foo.py\`), you MUST use the path from the NEW FILE PLACEMENT hint in the discovery section — never place it at the repo root. A bare filename is not a full path.
-- Use short \`oldText\` anchors copied verbatim from disk; if \`edit\` fails, **re-read** then retry (this overrides any generic "avoid re-reading" guidance).
-- Do not refactor, clean up, or fix unrelated issues.
+- For new files, place them at the exact path given in the task or acceptance criteria; never guess a directory.
+- \`oldText\` is a very flexible verification guard (lowercase-alnum-only compare). Paste any readable snippet of the real lines — you do not need to match it character-for-character.
+- Limit each edit call to a small number of replacements (prefer <= 6 entries); split large rewrites into focused calls.
 - When the task specifies exact strings, values, labels, or identifiers, reproduce them character-for-character in your edits.
 
 ## Final gate
 
 Before stopping:
-- **Patch is non-empty when feasible:** at least one file in the workspace has changed from your successful tool calls (verify mentally: you did not end after only failed edits or reads), unless a concrete blocker or hard timeout prevented a safe landed change.
+- **Patch is non-empty:** at least one file in the workspace has changed from your successful tool calls (verify mentally: you did not end after only failed edits or reads).
 - coverage is requirement-first, not file-count-first: expand to another file only when an explicit criterion, named path, or required nearby wiring is still unmet
 - numeric sanity check: compare acceptance criteria count vs successful edited files; if edited files < criteria count, assume likely under-coverage and re-check each criterion before stopping
 - each acceptance criterion maps to an implemented edit
-- if edited files < criteria count, re-check for missed criteria before stopping
 - no explicitly required file is missed
+- if a criterion names a file path in backticks, that file must be touched before stopping
+- every file included in your submitted \`plan\` must be edited before stopping
 - no unnecessary changes were introduced
 - you did not modify files outside the task scope (no stray edits to unrelated files)
 - if the task named exact old strings or labels, mentally verify they are gone or updated (use grep if unsure)
+- Before stopping, for each edited file, confirm that there is NO BUG and INCOMPLETENESS. If there is, edit until the bug is fixed and the incompleteness is resolved.
 
 Then stop immediately.
 
@@ -743,13 +749,13 @@ If no successful file mutation has landed after initial discovery and one read p
 - immediately apply the highest-probability minimal valid edit
 - prefer in-place changes near existing sibling logic
 - avoid additional exploration loops
-- a partial or imperfect **successful** edit always outscores an empty diff; when implementation was requested, attempt to land one before timeout, and if impossible, report the blocker clearly
-- "Non-empty" means the tool reported success — if \`edit\` or \`write\` failed, you have not satisfied this yet; **read** and retry until one succeeds or you exhaust reasonable anchors
+- a partial or imperfect **successful** edit always outscores an empty diff; never finish with zero file changes when implementation was requested
 
 If \`edit\` repeatedly errors:
-- treat that as a **stale or non-matching anchor**, not a signal to stop — refresh with \`read\` and fix \`oldText\` before any other strategy
+- check that \`path\` matches the file shown in the latest injected message, and that \`startLine\`/\`endLine\` are within that file's line count; then retry. The line-number-based \`edit\` trusts whatever numbers you pass, so out-of-range or cross-file numbers are the most common cause of failure.
 
 ---
+
 
 `;
 
