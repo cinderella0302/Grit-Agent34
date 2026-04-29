@@ -116,10 +116,10 @@ export type AgentSessionEvent =
 			steering: readonly string[];
 			followUp: readonly string[];
 	  }
-	| { type: "compaction_start"; reason: "manual" | "threshold" | "overflow" }
+	| { type: "compaction_start"; reason: "manual" | "threshold" | "overflow" | "auto" }
 	| {
 			type: "compaction_end";
-			reason: "manual" | "threshold" | "overflow";
+			reason: "manual" | "threshold" | "overflow" | "auto";
 			result: CompactionResult | undefined;
 			aborted: boolean;
 			willRetry: boolean;
@@ -220,10 +220,10 @@ interface ToolDefinitionEntry {
 // ============================================================================
 
 /** Standard thinking levels */
-const THINKING_LEVELS: ThinkingLevel[] = ["off", "minimal", "low", "medium", "high"];
+const THINKING_LEVELS: ThinkingLevel[] = ["off", "minimal", "low", "medium", "high", "xhigh", "xxhigh", "xxxhigh"];
 
 /** Thinking levels including xhigh (for supported models) */
-const THINKING_LEVELS_WITH_XHIGH: ThinkingLevel[] = ["off", "minimal", "low", "medium", "high", "xhigh"];
+const THINKING_LEVELS_WITH_XHIGH: ThinkingLevel[] = ["off", "minimal", "low", "medium", "high", "xhigh", "xxhigh", "xxxhigh"];
 
 // ============================================================================
 // AgentSession Class
