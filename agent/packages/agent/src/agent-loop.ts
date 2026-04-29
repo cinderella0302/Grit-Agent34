@@ -1418,39 +1418,76 @@ async function streamAssistantResponse(
 				break;
 
 			case "text_start":
+				partialMessage = event.partial;
+				context.messages.push(partialMessage);
+				addedPartial = true;
+				await emit({ type: "message_start", message: { ...partialMessage } });
+				break;
 			case "text_delta":
+				partialMessage = event.partial;
+				context.messages[context.messages.length - 1] = partialMessage;
+				await emit({
+					type: "message_update",
+					assistantMessageEvent: event,
+					message: { ...partialMessage },
+				});
+				break;
 			case "text_end":
+				partialMessage = event.partial;
+				context.messages[context.messages.length - 1] = partialMessage;
+				await emit({ type: "message_end", message: partialMessage });
+				break;
 			case "thinking_start":
+				partialMessage = event.partial;
+				context.messages.push(partialMessage);
+				addedPartial = true;
+				await emit({ type: "message_start", message: { ...partialMessage } });
+				break;
 			case "thinking_delta":
+				partialMessage = event.partial;
+				context.messages[context.messages.length - 1] = partialMessage;
+				await emit({
+					type: "message_update",
+					assistantMessageEvent: event,
+					message: { ...partialMessage },
+				});
+				break;
 			case "thinking_end":
+				partialMessage = event.partial;
+				context.messages[context.messages.length - 1] = partialMessage;
+				await emit({ type: "message_end", message: partialMessage });
+				break;
 			case "toolcall_start":
+				partialMessage = event.partial;
+				context.messages.push(partialMessage);
+				addedPartial = true;
+				await emit({ type: "message_start", message: { ...partialMessage } });
+				break;
 			case "toolcall_delta":
+				partialMessage = event.partial;
+				context.messages[context.messages.length - 1] = partialMessage;
+				await emit({
+					type: "message_update",
+					assistantMessageEvent: event,
+					message: { ...partialMessage },
+				});
+				break;
 			case "toolcall_end":
-				if (partialMessage) {
-					partialMessage = event.partial;
-					context.messages[context.messages.length - 1] = partialMessage;
-					await emit({
-						type: "message_update",
-						assistantMessageEvent: event,
-						message: { ...partialMessage },
-					});
-				}
+				partialMessage = event.partial;
+				context.messages[context.messages.length - 1] = partialMessage;
+				await emit({ type: "message_end", message: partialMessage });
 				break;
 
 			case "done":
-			case "error": {
-				const finalMessage = await response.result();
-				if (addedPartial) {
-					context.messages[context.messages.length - 1] = finalMessage;
-				} else {
-					context.messages.push(finalMessage);
-				}
-				if (!addedPartial) {
-					await emit({ type: "message_start", message: { ...finalMessage } });
-				}
-				await emit({ type: "message_end", message: finalMessage });
-				return finalMessage;
-			}
+				partialMessage = event.partial;
+				context.messages[context.messages.length - 1] = partialMessage;
+				await emit({ type: "message_end", message: partialMessage });
+				break;
+			case "error": 
+				partialMessage = event.partial;
+				context.messages[context.messages.length - 1] = partialMessage;
+				await emit({ type: "message_end", message: partialMessage });
+				break;
 		}
 	}
 
