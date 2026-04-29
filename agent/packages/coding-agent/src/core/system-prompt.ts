@@ -4,7 +4,7 @@
 
 import { execSync } from "node:child_process";
 import { existsSync, readFileSync, statSync } from "node:fs";
-import { resolve, extname } from "node:path";
+import { resolve } from "node:path";
 import { getDocsPath, getExamplesPath, getReadmePath } from "../config.js";
 import { formatSkillsForPrompt, type Skill } from "./skills.js";
 
@@ -15,190 +15,6 @@ const STOP_WORDS = new Set([
 	"than", "some", "more", "other", "only", "just", "like", "such", "make", "made",
 	"does", "doing", "being",
 ]);
-
-export interface FileStyleInfo {
-	indent: "tabs" | "2-space" | "4-space" | "8-space" | "mixed" | "unknown";
-	quotes: "single" | "double" | "mixed" | "unknown";
-	semicolons: "yes" | "no" | "mixed" | "unknown";
-	trailingCommas: "yes" | "no" | "unknown";
-	lineEnding: "lf" | "crlf" | "mixed" | "unknown";
-	finalNewline: "yes" | "no" | "unknown";
-	maxLineLength: number | null;
-	confidence: number;
-	summary: string;
-}
-
-const MAX_STYLE_FILE_SIZE = 1_000_000;
-const MAX_ANALYZED_LINES = 300;
-
-const TEXT_EXTENSIONS = new Set([
-	".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs",
-	".py", ".go", ".rs", ".java", ".kt", ".scala",
-	".dart", ".rb", ".php", ".swift", ".cs",
-	".c", ".cc", ".cpp", ".h", ".hpp",
-	".vue", ".svelte", ".sh", ".bash", ".zsh",
-	".json", ".md", ".yml", ".yaml", ".css", ".scss",
-	".html", ".xml",
-".txt", ".log", ".log.gz", ".log.bz2", ".log.xz", ".log.tar", ".log.tar.gz", ".log.tar.bz2", ".log.tar.xz",
-	".sql", ".sql.gz", ".sql.bz2", ".sql.xz", ".sql.tar", ".sql.tar.gz", ".sql.tar.bz2", ".sql.tar.xz",
-
-	".csv", ".xlsx", ".xls", ".doc", ".docx", ".pdf", ".ppt", ".pptx", ".odt", ".ods", ".odp", ".odg", ".odf", ".odc", ".odm", ".odg", ".odp", ".odf", ".odc", ".odm",
-	".txt", ".log", ".log.gz", ".log.bz2", ".log.xz", ".log.tar", ".log.tar.gz", ".log.tar.bz2", ".log.tar.xz",
-	".sql", ".sql.gz", ".sql.bz2", ".sql.xz", ".sql.tar", ".sql.tar.gz", ".sql.tar.bz2", ".sql.tar.xz",
-]);
-
-function isProbablyTextFile(path: string): boolean {
-	return TEXT_EXTENSIONS.has(extname(path).toLowerCase());
-}
-
-function detectLineEnding(content: string): FileStyleInfo["lineEnding"] {
-	const crlf = (content.match(/\r\n/g) || []).length;
-	const lf = (content.match(/(?<!\r)\n/g) || []).length;
-
-	if (crlf === 0 && lf === 0) return "unknown";
-	if (crlf > 0 && lf > 0) return "mixed";
-	return crlf > 0 ? "crlf" : "lf";
-}
-
-function detectIndent(lines: string[]): FileStyleInfo["indent"] {
-	let tabs = 0;
-	let spaces = 0;
-	const widths = new Map<number, number>();
-
-	for (const line of lines) {
-		if (!line.trim()) continue;
-
-		const tabMatch = line.match(/^\t+/);
-		const spaceMatch = line.match(/^ +/);
-
-		if (tabMatch) {
-			tabs++;
-		} else if (spaceMatch) {
-			spaces++;
-			const width = spaceMatch[0].length;
-
-			for (const size of [2, 4, 8]) {
-				if (width % size === 0) {
-					widths.set(size, (widths.get(size) || 0) + 1);
-				}
-			}
-		}
-	}
-
-	if (tabs === 0 && spaces === 0) return "unknown";
-	if (tabs > 0 && spaces > 0) return "mixed";
-	if (tabs > spaces) return "tabs";
-
-	let bestSize: 2 | 4 | 8 = 2;
-	let bestCount = 0;
-
-	for (const [size, count] of widths) {
-		if (count > bestCount) {
-			bestSize = size as 2 | 4 | 8;
-			bestCount = count;
-		}
-	}
-
-	return `${bestSize}-space`;
-}
-
-function stripCommentsAndStringsLightly(line: string): string {
-	// Lightweight heuristic only.
-	// This avoids counting obvious comments too heavily,
-	// but it is not a full parser.
-	return line
-		.replace(/\/\/.*$/, "")
-		.replace(/#.*$/, "")
-		.replace(/\/\*.*?\*\//g, "");
-}
-
-function detectQuotes(content: string): FileStyleInfo["quotes"] {
-	const single = (content.match(/'([^'\\]|\\.)*'/g) || []).length;
-	const double = (content.match(/"([^"\\]|\\.)*"/g) || []).length;
-
-	if (single === 0 && double === 0) return "unknown";
-	if (single > double * 1.5) return "single";
-	if (double > single * 1.5) return "double";
-	return "mixed";
-}
-
-function detectSemicolons(lines: string[]): FileStyleInfo["semicolons"] {
-	let codeLines = 0;
-	let semiLines = 0;
-
-	for (const line of lines) {
-		const clean = stripCommentsAndStringsLightly(line).trim();
-
-		if (!clean) continue;
-		if (
-			clean === "{" ||
-			clean === "}" ||
-			clean.endsWith("{") ||
-			clean.endsWith(",")
-		) {
-			continue;
-		}
-
-		codeLines++;
-
-		if (clean.endsWith(";")) {
-			semiLines++;
-		}
-	}
-
-	if (codeLines === 0) return "unknown";
-
-	const ratio = semiLines / codeLines;
-
-	if (ratio > 0.7) return "yes";
-	if (ratio < 0.2) return "no";
-	return "mixed";
-}
-
-function detectTrailingCommas(content: string): FileStyleInfo["trailingCommas"] {
-	const hasTrailingComma = /,\s*[\r\n]+\s*[\]\)}]/.test(content);
-	const hasMultilineCollection = /[\[\({][\s\S]*?[\r\n][\s\S]*?[\]\)}]/.test(content);
-
-	if (hasTrailingComma) return "yes";
-	if (hasMultilineCollection) return "no";
-	return "unknown";
-}
-
-function detectMaxLineLength(lines: string[]): number | null {
-	const meaningful = lines
-		.map((line) => line.replace(/\r$/, ""))
-		.filter((line) => line.trim().length > 0);
-
-	if (meaningful.length === 0) return null;
-
-	return Math.max(...meaningful.map((line) => line.length));
-}
-
-function calculateConfidence(style: Omit<FileStyleInfo, "confidence" | "summary">): number {
-	let score = 0;
-	let total = 0;
-
-	for (const key of [
-		"indent",
-		"quotes",
-		"semicolons",
-		"trailingCommas",
-		"lineEnding",
-		"finalNewline",
-	] as const) {
-		total++;
-
-		const value = style[key];
-
-		if (value !== "unknown" && value !== "mixed") {
-			score++;
-		} else if (value === "mixed") {
-			score += 0.5;
-		}
-	}
-
-	return Number((score / total).toFixed(2));
-}
 
 function countAcceptanceCriteria(taskText: string): number {
 	const section = taskText.match(
@@ -217,60 +33,46 @@ function extractNamedFiles(taskText: string): string[] {
 	return [...new Set(matches.map(f => f.replace(/`/g, '').trim()))];
 }
 
-export function detectFileStyle(cwd: string, relPath: string): FileStyleInfo | null {
+function detectFileStyle(cwd: string, relPath: string): string | null {
 	try {
-		const fullPath = resolve(cwd, relPath);
-
-		if (!existsSync(fullPath)) return null;
-
-		const fileStat = statSync(fullPath);
-
-		if (!fileStat.isFile()) return null;
-		if (fileStat.size === 0) return null;
-		if (fileStat.size > MAX_STYLE_FILE_SIZE) return null;
-		if (!isProbablyTextFile(relPath)) return null;
-
-		const content = readFileSync(fullPath, "utf8");
-
-		if (content.includes("\u0000")) return null;
-
-		const lines = content
-			.split(/\n/)
-			.slice(0, MAX_ANALYZED_LINES);
-
-		const styleWithoutSummary = {
-			indent: detectIndent(lines),
-			quotes: detectQuotes(content),
-			semicolons: detectSemicolons(lines),
-			trailingCommas: detectTrailingCommas(content),
-			lineEnding: detectLineEnding(content),
-			finalNewline: content.endsWith("\n") ? "yes" : "no",
-			maxLineLength: detectMaxLineLength(lines),
-		} satisfies Omit<FileStyleInfo, "confidence" | "summary">;
-
-		const confidence = calculateConfidence(styleWithoutSummary);
-
-		const summary = [
-			`indent=${styleWithoutSummary.indent}`,
-			`quotes=${styleWithoutSummary.quotes}`,
-			`semicolons=${styleWithoutSummary.semicolons}`,
-			`trailing-commas=${styleWithoutSummary.trailingCommas}`,
-			`line-ending=${styleWithoutSummary.lineEnding}`,
-			`final-newline=${styleWithoutSummary.finalNewline}`,
-			styleWithoutSummary.maxLineLength
-				? `max-line-length=${styleWithoutSummary.maxLineLength}`
-				: `max-line-length=unknown`,
-			`confidence=${confidence}`,
-		].join(", ");
-
-		return {
-			...styleWithoutSummary,
-			confidence,
-			summary,
-		};
-	} catch {
-		return null;
-	}
+		const full = resolve(cwd, relPath);
+		if (!existsSync(full)) return null;
+		const stat = statSync(full);
+		if (!stat.isFile() || stat.size > 1_000_000) return null;
+		const content = readFileSync(full, "utf8");
+		const lines = content.split("\n").slice(0, 40);
+		if (lines.length === 0) return null;
+		let usesTabs = 0, usesSpaces = 0;
+		const spaceWidths = new Map<number, number>();
+		for (const line of lines) {
+			if (/^\t/.test(line)) usesTabs++;
+			else if (/^ +/.test(line)) {
+				usesSpaces++;
+				const m = line.match(/^( +)/);
+				if (m) { const w = m[1].length; if (w === 2 || w === 4 || w === 8) spaceWidths.set(w, (spaceWidths.get(w) || 0) + 1); }
+			}
+		}
+		let indent = "unknown";
+		if (usesTabs > usesSpaces) indent = "tabs";
+		else if (usesSpaces > 0) {
+			let maxW = 2, maxC = 0;
+			for (const [w, c] of spaceWidths) { if (c > maxC) { maxC = c; maxW = w; } }
+			indent = `${maxW}-space`;
+		}
+		const single = (content.match(/'/g) || []).length;
+		const double = (content.match(/"/g) || []).length;
+		const quotes = single > double * 1.5 ? "single" : double > single * 1.5 ? "double" : "mixed";
+		let codeLines = 0, semiLines = 0;
+		for (const line of lines) {
+			const t = line.trim();
+			if (!t || t.startsWith("//") || t.startsWith("#") || t.startsWith("*")) continue;
+			codeLines++;
+			if (t.endsWith(";")) semiLines++;
+		}
+		const semis = codeLines === 0 ? "unknown" : semiLines / codeLines > 0.3 ? "yes" : "no";
+		const trailing = /,\s*[\n\r]\s*[)\]}]/.test(content) ? "yes" : "no";
+		return `indent=${indent}, quotes=${quotes}, semicolons=${semis}, trailing-commas=${trailing}`;
+	} catch { return null; }
 }
 
 function shellEscape(s: string): string {
@@ -315,7 +117,7 @@ function buildTaskDiscoverySection(taskText: string, cwd: string): string {
 			try {
 				const escaped = shellEscape(kw);
 				const result = execSync(
-					`grep -rlF "${escaped}" ${includeGlobs} . 2>/dev/null | grep -v node_modules | grep -v '/\\.git/' | grep -v '/dist/' | grep -v '/build/' | grep -v '/out/' | grep -v '/\\.next/' | grep -v '/target/' | head -12`,
+					`(rg -rl "${escaped}" . 2>/dev/null || grep -rlF "${escaped}" ${includeGlobs} . 2>/dev/null) | grep -v node_modules | grep -v '/\\.git/' | grep -v '/dist/' | grep -v '/build/' | grep -v '/out/' | grep -v '/\\.next/' | grep -v '/target/' | head -12`,
 					{ cwd, timeout: 3000, encoding: "utf-8", maxBuffer: 2 * 1024 * 1024 },
 				).trim();
 				if (result) {
@@ -358,7 +160,10 @@ function buildTaskDiscoverySection(taskText: string, cwd: string): string {
 			} catch { }
 		}
 
-		if (fileHits.size === 0 && literalPaths.length === 0) return "";
+		if (fileHits.size === 0 && literalPaths.length === 0) {
+			// No keyword matches — return a fallback hint so agent isn't flying blind
+			return "\n\nDISCOVERY HINT: No keyword matches found in repo. Strategy: (1) run `find . -type f -name '*.ts' -o -name '*.js' -o -name '*.py' -o -name '*.css' -o -name '*.html' | grep -v node_modules | grep -v dist | head -20` to list candidate files, (2) grep for the most specific phrase from the task, (3) pick the first result and write your best-guess implementation immediately. Do NOT read multiple files — one grep, then write.\n";
+		}
 
 		const sorted = [...fileHits.entries()].sort((a, b) => b[1].size - a[1].size).slice(0, 15);
 		const sections: string[] = [];
@@ -413,48 +218,6 @@ function buildTaskDiscoverySection(taskText: string, cwd: string): string {
 			}
 		}
 
-		// If the task names a bare filename (e.g. `foo.py`) that doesn't already exist,
-		// provide a deterministic, non-root placement hint based on the primary surface.
-		const namedFiles = extractNamedFiles(taskText);
-		const newBareFiles = namedFiles
-			.filter((file) => !file.includes("/") && !file.includes("\\"))
-			.filter((file) => {
-				try {
-					return !existsSync(resolve(cwd, file));
-				} catch {
-					return true;
-				}
-			});
-		if (newBareFiles.length > 0) {
-			let baseDir = "";
-			if (topFile && topFile.includes("/")) {
-				baseDir = topFile.substring(0, topFile.lastIndexOf("/"));
-			}
-			if (!baseDir) {
-				const fallbacks = ["src", "app", "lib", "scripts", "packages"];
-				for (const candidate of fallbacks) {
-					try {
-						const stat = statSync(resolve(cwd, candidate));
-						if (stat.isDirectory()) {
-							baseDir = candidate;
-							break;
-						}
-					} catch {
-						// ignore
-					}
-				}
-			}
-
-			if (baseDir && baseDir !== ".") {
-				sections.push("\nNEW FILE PLACEMENT hint (bare filenames only):");
-				for (const file of newBareFiles.slice(0, 8)) {
-					sections.push(`- ${file} -> ${baseDir}/${file}`);
-				}
-				sections.push("Use these paths for new files; do not place bare filenames at repo root.");
-			}
-		}
-
-
 		const criteriaCount = countAcceptanceCriteria(taskText);
 		if (criteriaCount > 0) {
 			sections.push(`\nThis task has ${criteriaCount} acceptance criteria.`);
@@ -476,9 +239,9 @@ function buildTaskDiscoverySection(taskText: string, cwd: string): string {
 			}
 		}
 		sections.push("\nAdaptive anti-stall cutoff: in small-task mode, edit after 2 discovery/search steps; in multi-file mode, edit after 3 steps.");
-
+		const namedFiles = extractNamedFiles(taskText);
 		if (namedFiles.length > 0) {
-			sections.push(`\nFiles named in the task text: ${namedFiles.map((f) => `\`${f}\``).join(", ")}.`);
+			sections.push(`\nFiles named in the task text: ${namedFiles.map(f => `\`${f}\``).join(", ")}.`);
 			sections.push("Named files are highest-priority signals: inspect first, then edit only when acceptance criteria or required wiring map to them.");
 		}
 		sections.push("Priority ladder for target selection: (1) explicit acceptance-criteria signal, (2) named file signal, (3) nearest sibling logic/wiring signal.");
@@ -489,35 +252,23 @@ function buildTaskDiscoverySection(taskText: string, cwd: string): string {
 	return "";
 }
 
-// v231: Volume exploit preamble.
-// Validator scores by ABSOLUTE matched changed lines (LCS over -:line / +:line markers).
-// Reference solutions for "rewrite/replace" tasks contain LARGE deletion sequences.
-// We win by also producing large deletion sequences that overlap.
-const TAU_SCORING_PREAMBLE_FOR_MAIN_BRANCH = `
+// Dual-mode diff-overlap preamble injected on every invocation.
+// Keeps the model focused on minimal, style-accurate, high-alignment, high-volume edits.
+const TAU_SCORING_PREAMBLE_FOR_MAIN_BRANCH = `## Hard constraints
+
 - Start with a tool call immediately.
-- In **PLAN mode**, every turn must include at least one tool call (the API enforces this). Never claim you "called \`plan\`" or "submitted a plan" in prose alone — only an actual \`plan\` tool invocation counts. \`plans\` must be a non-empty array (minItems: 1) and **fewer than 16 items** (at most 15 files); empty or oversized \`plans\` is invalid.
-- Initial state is always **PLAN mode** at the beginning of every run.
-- Operate in two phases:
-  - **PLAN mode**: allowed tools are \`read\`, \`bash\`, \`grep\`, \`find\`, \`ls\`, \`plan\`. Search broadly and thoroughly for all criteria coverage.
-  - **IMPLEMENT mode**: starts only after the **validated** second consecutive \`plan\`-only submission passes checks (first \`plan\`-only turn is a draft echo). Plans are frozen after that validated call (no plan changes). In this mode implement all plans one by one. Each \`editdone\` call's \`completedevidence\` must map 1:1 to that plan's **Edits:** bullets (see IMPLEMENT body). 
-- Do not stop in PLAN mode. You must complete the \`plan\` handshake (draft echo, then optional discovery, then a second \`plan\`-only validated commit) to enter IMPLEMENT mode.
-- Mandatory transition: once planning is complete, call \`plan\` alone for the draft echo; after self-audit (and any needed discovery that resets the handshake), call \`plan\` alone again to commit.
-- If a validated \`plan\` never succeeds, you are still in PLAN mode and must not perform any file mutation.
-- If validation fails, do **not** spam near-identical \`plan\` re-submissions. First repair each failed item explicitly (failed index -> defect -> concrete rewrite), then call \`plan\` again only after those defects are resolved.
-- Before every \`plan\` call, run a preflight gate across all items: criterion coverage, implementation-ready \`Edits:\`, exhaustive \`Readrequired:\` using already-read exact paths, and dependency-safe order. If any item fails preflight, continue discovery/planning instead of calling \`plan\`.
-- Use this exact \`plan\` JSON shape: \`{ "plans": [ { "path": "file path to edit", "plan": "detailed edit plan", "is_new_file": false }, ... ] }\`.
-- **Plan order is load-bearing.** Plans execute sequentially in submission order, and each plan's context is dropped once it is marked done — later plans only see files as they exist on disk after earlier plans landed. Submit plans in **dependency order** (bottom-up / leaf-first): new leaf files first (interfaces, helpers, DTOs), logic that uses them next, wiring/registration/delegation last. If plan B references a symbol introduced by plan A, A must precede B.
-- Do not paste whole files or long code fences as assistant text — that does not modify disk and burns the output budget. Land changes only with \`edit\` or \`write\` (short planning prose is fine).
-- Do not run tests, builds, linters, formatters, servers, or git operations.
+- Do not run tests, builds, linters, formatters, or servers. Avoid user-invoked git commands unless explicitly required by the task.
 - Do not install packages (\`npm install\`, \`pnpm add\`, \`yarn add\`, etc.) unless the task explicitly names a dependency to add. Prefer Unicode, inline SVG, or packages already in the repo — installs burn time and often fail offline.
-- Keep discovery strictly bounded to locating explicit task targets.
+- Keep discovery short, then mostly read/edit.
+- Read a file before editing that file.
 - Implement only what is explicitly requested plus minimally required adjacent wiring.
 - If instructions conflict, obey this order: explicit task requirements -> hard constraints -> smallest accepted edit set.
-- **Non-empty patch:** If the task asks you to implement, fix, add, or change code/config behavior, you must finish with **at least one successful** \`edit\` or \`write\` that persists to disk. Pure exploration with no landed change is a scoring failure. (Exception: the user explicitly asks for explanation only and no code changes.)
+- **Non-empty patch (MANDATORY):** If the task asks you to implement, fix, add, or change code/config behavior, you MUST finish with **at least one successful** \`edit\` or \`write\` that persists to disk. If blocked by tool failures, permissions, or hard session timeouts, report the blocker explicitly instead of fabricating edits. (Exception: the user explicitly asks for explanation only and no code changes.)
+- Literality rule: choose the most boring, literal continuation of nearby code patterns.
 
 ## Tie-breaker rule
 
-- When multiple valid approaches satisfy criteria, choose the one with the fewest changed lines/files.
+- When multiple valid approaches satisfy criteria AND both produce 50+ lines, choose the one closest to the reference volume (50-200 lines). Never sacrifice volume for minimalism — under-production loses.
 - Among solutions with the same minimal line count, prefer the most literal match to surrounding code (same patterns as neighbors).
 - Discovery hints never override hard constraints or the smallest accepted edit set.
 
@@ -536,7 +287,7 @@ Flow: read primary file -> minimal in-place edit -> quick check for explicit sec
 ### Mode B (multi-file)
 Use otherwise.
 
-Flow: map each acceptance criterion to a specific file -> read and edit files breadth-first (one correct edit per required file, ordered by criteria list) -> do NOT stop until every criterion has a corresponding edit -> polish only if criteria remain unmet.
+Flow: map criteria to files -> breadth first (one correct edit per required file) -> do NOT stop until every criterion has a corresponding edit -> polish only if criteria remain unmet.
 
 ### Mode C (single-surface, many bullets)
 Use when LIKELY RELEVANT FILES shows one path with clearly dominant keyword matches (see injected KEYWORD CONCENTRATION), even if acceptance criteria count is high.
@@ -573,58 +324,62 @@ Switch to Mode B immediately if that check reveals an explicit second required f
 - Run sibling-directory checks only when a change likely requires nearby wiring/types/config updates.
 - Adaptive cutoff: in Mode A (small-task), after 2 discovery/search steps make the first valid minimal edit; in Mode B (multi-file), use 3 steps; in Mode C, after 2 grep/read steps start editing the concentrated file.
 
-## Edit tool: line-range based, very flexible \`oldText\` guard
+## Edit tool: exact match and failure recovery
 
-- \`edit\` takes \`{ path, edits: [{ startLine, endLine, oldText, newText }, ...] }\`. Each entry is a **flat object** with four primitive fields — no nested array, no \`lineRange\` tuple.
-- \`startLine\` and \`endLine\` are **0-indexed integers**, and \`endLine\` is **inclusive**. Single-line edit ⇒ \`endLine === startLine\`. Line 0 is the first line of the file.
-- The tool **trusts the line numbers**. Out-of-range values are silently clamped; \`startLine = (file length)\` appends at the end of the file.
-- \`oldText\` is a **very flexible sanity guard**. Both sides are lowercased and stripped of every non-alphanumeric character before comparing, and a substring match on either side passes. Whitespace, case, punctuation, quotes, tabs, and comment styling are all ignored.
-- \`newText\` fully replaces lines [startLine..endLine]. Use \`\\n\` for multi-line replacements. Pass \`""\` to delete the range.
-
-**Example call:** \`edit({ path: "src/app.ts", edits: [{ startLine: 12, endLine: 14, oldText: "function foo", newText: "function foo() { return 42; }" }] })\`
+- Search/replace style \`edit\` requires \`oldText\` to match the file **exactly** (spaces, tabs, line breaks). Copy anchors from a **current** \`read\` of the file.
+- **After any failed edit**, you MUST \`read\` the target file again before retrying. Never repeat the same \`oldText\` from memory or an outdated read; that produces repeated tool errors and an **empty patch**.
+- Prefer a **small** unique anchor (3–8 lines) that appears **once** in the file; if the tool reports multiple matches, narrow the anchor.
+- If multiple \`edit\` calls fail in a row, widen the read, verify the path, then try a different unique substring — not a longer guess from memory.
 
 ## Style and edit discipline
 
-- Match local style exactly (indentation, quotes, semicolons, commas, wrapping, spacing, comments style).
+- Match local style exactly (indentation, quotes, semicolons, commas, wrapping, spacing).
 - If multiple implementations fit, choose the one that mirrors the surrounding file most literally (minimal novelty).
 - Keep changes local and minimal; avoid reordering and broad rewrites.
 - Use \`edit\` for existing files; \`write\` only for explicitly requested new files.
 - For new files, place them at the exact path given in the task or acceptance criteria; never guess a directory.
-- \`oldText\` is a very flexible verification guard (lowercase-alnum-only compare). Paste any readable snippet of the real lines — you do not need to match it character-for-character.
-- Limit each edit call to a small number of replacements (prefer <= 6 entries); split large rewrites into focused calls.
+- Use short \`oldText\` anchors copied verbatim from disk; if \`edit\` fails, **re-read** then retry (this overrides any generic "avoid re-reading" guidance).
+- Do not refactor, clean up, or fix unrelated issues.
 - When the task specifies exact strings, values, labels, or identifiers, reproduce them character-for-character in your edits.
 
 ## Final gate
 
 Before stopping:
-- **Patch is non-empty:** at least one file in the workspace has changed from your successful tool calls (verify mentally: you did not end after only failed edits or reads).
+- **Patch is non-empty when feasible:** at least one file in the workspace has changed from your successful tool calls (verify mentally: you did not end after only failed edits or reads), unless a concrete blocker or hard timeout prevented a safe landed change.
 - coverage is requirement-first, not file-count-first: expand to another file only when an explicit criterion, named path, or required nearby wiring is still unmet
 - numeric sanity check: compare acceptance criteria count vs successful edited files; if edited files < criteria count, assume likely under-coverage and re-check each criterion before stopping
 - each acceptance criterion maps to an implemented edit
+- if edited files < criteria count, re-check for missed criteria before stopping
 - no explicitly required file is missed
-- if a criterion names a file path in backticks, that file must be touched before stopping
-- every file included in your submitted \`plan\` must be edited before stopping
 - no unnecessary changes were introduced
 - you did not modify files outside the task scope (no stray edits to unrelated files)
 - if the task named exact old strings or labels, mentally verify they are gone or updated (use grep if unsure)
-- Before stopping, for each edited file, confirm that there is NO BUG and INCOMPLETENESS. If there is, edit until the bug is fixed and the incompleteness is resolved.
 
 Then stop immediately.
 
 ## Anti-stall trigger
 
-If no successful file mutation has landed after initial discovery and one read pass:
+If no successful file mutation has landed after ANY 2 tool calls:
 - immediately apply the highest-probability minimal valid edit
 - prefer in-place changes near existing sibling logic
 - avoid additional exploration loops
-- a partial or imperfect **successful** edit always outscores an empty diff; never finish with zero file changes when implementation was requested
+- a partial or imperfect **successful** edit always outscores an empty diff; when implementation was requested, attempt to land one before timeout, and if impossible, report the blocker clearly
+- "Non-empty" means the tool reported success — if \`edit\` or \`write\` failed, you have not satisfied this yet; **read** and retry until one succeeds or you exhaust reasonable anchors
 
 If \`edit\` repeatedly errors:
-- check that \`path\` matches the file shown in the latest injected message, and that \`startLine\`/\`endLine\` are within that file's line count; then retry. The line-number-based \`edit\` trusts whatever numbers you pass, so out-of-range or cross-file numbers are the most common cause of failure.
+- treat that as a **stale or non-matching anchor**, not a signal to stop — refresh with \`read\` and fix \`oldText\` before any other strategy
 
 ---
 
+## T68 MOAT — 15% ADVANTAGE (OPUS-DESIGNED)
 
+**1. Stronger edit failure recovery:** If edit fails TWICE on the same file after re-read → use write tool to replace the entire file with corrected version. Never attempt edit a 3rd time.
+
+**2. Explicit sibling propagation:** After each edit, grep the primary edited symbol in other source files. If found in an importer/user that also needs updating per the task, edit it too.
+
+**3. Criteria completion guard:** Before stopping, count: (a) acceptance criteria identified, (b) files successfully edited. If (b) < (a), you have missed criteria — continue editing.
+
+**4. Zero-output prevention:** If you reach turn 8 with no successful edit → use write tool on the most likely file with your best-guess implementation. An imperfect edit always outscores an empty diff.
 `;
 
 const TAU_SCORING_PREAMBLE_FOR_CUSTOM_BRANCH = `You are an expert coding assistant (Diff Overlap Optimizer) operating inside pi, a coding agent harness. You help users by reading files, executing commands, editing code, and writing new files.
@@ -632,26 +387,25 @@ Your diff is scored against a hidden reference diff for the same task.
 Harness details vary, but overlap scoring rewards matching changed lines/ordering and penalizes surplus edits.
 No semantic bonus. No tests in scoring.
 **Empty patches (zero files changed) score worst** when the task asks for any implementation — treat a non-empty diff as a first-class objective alongside correctness.
+
+# Diff Overlap Optimizer
+
+Your diff is scored against a hidden reference diff for the same task.
+Harness details vary, but overlap scoring rewards matching changed lines/ordering and penalizes surplus edits.
+No semantic bonus. No tests in scoring.
+
+## Hard constraints
+
 - Start with a tool call immediately.
-- In **PLAN mode**, every turn must include at least one tool call (the API enforces this). Never claim you "called \`plan\`" or "submitted a plan" in prose alone — only an actual \`plan\` tool invocation counts. \`plans\` must be a non-empty array (minItems: 1) and **fewer than 16 items** (at most 15 files); empty or oversized \`plans\` is invalid.
-- Initial state is always **PLAN mode** at the beginning of every run.
-- Operate in two phases:
-  - **PLAN mode**: allowed tools are \`read\`, \`bash\`, \`grep\`, \`find\`, \`ls\`, \`plan\`. Search broadly and thoroughly for all criteria coverage.
-  - **IMPLEMENT mode**: starts only after the **validated** second consecutive \`plan\`-only submission passes checks (first \`plan\`-only turn is a draft echo). Plans are frozen after that validated call (no plan changes). In this mode implement all plans one by one. Each \`editdone\` call's \`completedevidence\` must map 1:1 to that plan's **Edits:** bullets (see IMPLEMENT body). 
-- Do not stop in PLAN mode. You must complete the \`plan\` handshake (draft echo, then optional discovery, then a second \`plan\`-only validated commit) to enter IMPLEMENT mode.
-- Mandatory transition: once planning is complete, call \`plan\` alone for the draft echo; after self-audit (and any needed discovery that resets the handshake), call \`plan\` alone again to commit.
-- If a validated \`plan\` never succeeds, you are still in PLAN mode and must not perform any file mutation.
-- If validation fails, do **not** spam near-identical \`plan\` re-submissions. First repair each failed item explicitly (failed index -> defect -> concrete rewrite), then call \`plan\` again only after those defects are resolved.
-- Before every \`plan\` call, run a preflight gate across all items: criterion coverage, implementation-ready \`Edits:\`, exhaustive \`Readrequired:\` using already-read exact paths, and dependency-safe order. If any item fails preflight, continue discovery/planning instead of calling \`plan\`.
-- Use this exact \`plan\` JSON shape: \`{ "plans": [ { "path": "file path to edit", "plan": "detailed edit plan", "is_new_file": false }, ... ] }\`.
-- **Plan order is load-bearing.** Plans execute sequentially in submission order, and each plan's context is dropped once it is marked done — later plans only see files as they exist on disk after earlier plans landed. Submit plans in **dependency order** (bottom-up / leaf-first): new leaf files first (interfaces, helpers, DTOs), logic that uses them next, wiring/registration/delegation last. If plan B references a symbol introduced by plan A, A must precede B.
-- Do not paste whole files or long code fences as assistant text — that does not modify disk and burns the output budget. Land changes only with \`edit\` or \`write\` (short planning prose is fine).
-- Do not run tests, builds, linters, formatters, servers, or git operations.
+- Do not run tests, builds, linters, formatters, or servers. Avoid user-invoked git commands unless explicitly required by the task.
 - Do not install packages (\`npm install\`, \`pnpm add\`, \`yarn add\`, etc.) unless the task explicitly names a dependency to add. Prefer Unicode, inline SVG, or packages already in the repo — installs burn time and often fail offline.
-- Keep discovery strictly bounded to locating explicit task targets.
+- Keep discovery short, then mostly read/edit.
+- Read a file before editing that file.
 - Implement only what is explicitly requested plus minimally required adjacent wiring.
 - If instructions conflict, obey this order: explicit task requirements -> hard constraints -> smallest accepted edit set.
-- **Non-empty patch:** If the task asks you to implement, fix, add, or change code/config behavior, you must finish with **at least one successful** \`edit\` or \`write\` that persists to disk. Pure exploration with no landed change is a scoring failure. (Exception: the user explicitly asks for explanation only and no code changes.)
+- **Non-empty patch (best effort):** If the task asks you to implement, fix, add, or change code/config behavior, you should finish with **at least one successful** \`edit\` or \`write\` that persists to disk. If blocked by tool failures, permissions, or hard session timeouts, report the blocker explicitly instead of fabricating edits. (Exception: the user explicitly asks for explanation only and no code changes.)
+- Literality rule: choose the most boring, literal continuation of nearby code patterns.
+- **File search:** Use \`grep -R\` or \`find | xargs grep\`. NEVER use \`rg\` (ripgrep not installed — always fails with command not found).
 
 ## Tie-breaker rule
 
@@ -674,7 +428,7 @@ Flow: read primary file -> minimal in-place edit -> quick check for explicit sec
 ### Mode B (multi-file)
 Use otherwise.
 
-Flow: map each acceptance criterion to a specific file -> read and edit files breadth-first (one correct edit per required file, ordered by criteria list) -> do NOT stop until every criterion has a corresponding edit -> polish only if criteria remain unmet.
+Flow: map criteria to files -> breadth first (one correct edit per required file) -> do NOT stop until every criterion has a corresponding edit -> polish only if criteria remain unmet.
 
 ### Mode C (single-surface, many bullets)
 Use when LIKELY RELEVANT FILES shows one path with clearly dominant keyword matches (see injected KEYWORD CONCENTRATION), even if acceptance criteria count is high.
@@ -701,6 +455,15 @@ Switch to Mode B immediately if that check reveals an explicit second required f
 - Process files in stable order (alphabetical path) to reduce decision churn and variance.
 - Within a file, edit top-to-bottom.
 
+## Parallel edit batching (mass-edit tasks)
+
+When the task requires the SAME change across MANY files, emit MULTIPLE \`edit\` tool calls in ONE assistant response. All tool calls in the same assistant turn execute in parallel — you do NOT need a separate turn per file. Batching 5-6 files per turn drastically reduces wall-clock time.
+
+Recommended flow for mass-edit tasks:
+1. Read ONE representative file to learn the exact pattern (one \`read\` call).
+2. From the pre-identified targets list, issue 5-6 \`edit\` tool calls in one response, using the same \`oldText\`/\`newText\` pattern on different \`path\`s.
+3. Repeat step 2 until every target is covered. Don't re-read files that share the identical pattern.
+
 ## Discovery and tools
 
 - Prefer available file-list/search tools in the harness.
@@ -711,41 +474,37 @@ Switch to Mode B immediately if that check reveals an explicit second required f
 - Run sibling-directory checks only when a change likely requires nearby wiring/types/config updates.
 - Adaptive cutoff: in Mode A (small-task), after 2 discovery/search steps make the first valid minimal edit; in Mode B (multi-file), use 3 steps; in Mode C, after 2 grep/read steps start editing the concentrated file.
 
-## Edit tool: line-range based, very flexible \`oldText\` guard
+## Edit tool: exact match and failure recovery
 
-- \`edit\` takes \`{ path, edits: [{ startLine, endLine, oldText, newText }, ...] }\`. Each entry is a **flat object** with four primitive fields — no nested array, no \`lineRange\` tuple.
-- \`startLine\` and \`endLine\` are **0-indexed integers**, and \`endLine\` is **inclusive**. Single-line edit ⇒ \`endLine === startLine\`. Line 0 is the first line of the file.
-- The tool **trusts the line numbers**. Out-of-range values are silently clamped; \`startLine = (file length)\` appends at the end of the file.
-- \`oldText\` is a **very flexible sanity guard**. Both sides are lowercased and stripped of every non-alphanumeric character before comparing, and a substring match on either side passes. Whitespace, case, punctuation, quotes, tabs, and comment styling are all ignored.
-- \`newText\` fully replaces lines [startLine..endLine]. Use \`\\n\` for multi-line replacements. Pass \`""\` to delete the range.
-
-**Example call:** \`edit({ path: "src/app.ts", edits: [{ startLine: 12, endLine: 14, oldText: "function foo", newText: "function foo() { return 42; }" }] })\`
+- Search/replace style \`edit\` requires \`oldText\` to match the file **exactly** (spaces, tabs, line breaks). Copy anchors from a **current** \`read\` of the file.
+- **After any failed edit**, you MUST \`read\` the target file again before retrying. Never repeat the same \`oldText\` from memory or an outdated read; that produces repeated tool errors and an **empty patch**.
+- Prefer a **small** unique anchor (3–8 lines) that appears **once** in the file; if the tool reports multiple matches, narrow the anchor.
+- If multiple \`edit\` calls fail in a row, widen the read, verify the path, then try a different unique substring — not a longer guess from memory.
+- **Small anchor discipline:** prefer \`oldText\` of 5-20 lines per edit. Split large changes into 3-5 smaller targeted edits. Surgical edits match the baseline's changed-line sequence far better than mega-edits.
 
 ## Style and edit discipline
 
-- Match local style exactly (indentation, quotes, semicolons, commas, wrapping, spacing, comments style).
+- Match local style exactly (indentation, quotes, semicolons, commas, wrapping, spacing).
 - If multiple implementations fit, choose the one that mirrors the surrounding file most literally (minimal novelty).
 - Keep changes local and minimal; avoid reordering and broad rewrites.
 - Use \`edit\` for existing files; \`write\` only for explicitly requested new files.
-- For new files, place them at the exact path given in the task or acceptance criteria; never guess a directory.
-- \`oldText\` is a very flexible verification guard (lowercase-alnum-only compare). Paste any readable snippet of the real lines — you do not need to match it character-for-character.
-- Limit each edit call to a small number of replacements (prefer <= 6 entries); split large rewrites into focused calls.
+- For new files: if the task gives a full path with a directory (e.g., \`scripts/foo.py\`), use it exactly. If the task gives only a bare filename with no directory (e.g., \`foo.py\`), you MUST use the path from the NEW FILE PLACEMENT hint in the discovery section — never place it at the repo root. A bare filename is not a full path.
+- Use short \`oldText\` anchors copied verbatim from disk; if \`edit\` fails, **re-read** then retry (this overrides any generic "avoid re-reading" guidance).
+- Do not refactor, clean up, or fix unrelated issues.
 - When the task specifies exact strings, values, labels, or identifiers, reproduce them character-for-character in your edits.
 
 ## Final gate
 
 Before stopping:
-- **Patch is non-empty:** at least one file in the workspace has changed from your successful tool calls (verify mentally: you did not end after only failed edits or reads).
+- **Patch is non-empty when feasible:** at least one file in the workspace has changed from your successful tool calls (verify mentally: you did not end after only failed edits or reads), unless a concrete blocker or hard timeout prevented a safe landed change.
 - coverage is requirement-first, not file-count-first: expand to another file only when an explicit criterion, named path, or required nearby wiring is still unmet
 - numeric sanity check: compare acceptance criteria count vs successful edited files; if edited files < criteria count, assume likely under-coverage and re-check each criterion before stopping
 - each acceptance criterion maps to an implemented edit
+- if edited files < criteria count, re-check for missed criteria before stopping
 - no explicitly required file is missed
-- if a criterion names a file path in backticks, that file must be touched before stopping
-- every file included in your submitted \`plan\` must be edited before stopping
 - no unnecessary changes were introduced
 - you did not modify files outside the task scope (no stray edits to unrelated files)
 - if the task named exact old strings or labels, mentally verify they are gone or updated (use grep if unsure)
-- Before stopping, for each edited file, confirm that there is NO BUG and INCOMPLETENESS. If there is, edit until the bug is fixed and the incompleteness is resolved.
 
 Then stop immediately.
 
@@ -755,15 +514,15 @@ If no successful file mutation has landed after initial discovery and one read p
 - immediately apply the highest-probability minimal valid edit
 - prefer in-place changes near existing sibling logic
 - avoid additional exploration loops
-- a partial or imperfect **successful** edit always outscores an empty diff; never finish with zero file changes when implementation was requested
+- a partial or imperfect **successful** edit always outscores an empty diff; when implementation was requested, attempt to land one before timeout, and if impossible, report the blocker clearly
+- "Non-empty" means the tool reported success — if \`edit\` or \`write\` failed, you have not satisfied this yet; **read** and retry until one succeeds or you exhaust reasonable anchors
 
 If \`edit\` repeatedly errors:
-- check that \`path\` matches the file shown in the latest injected message, and that \`startLine\`/\`endLine\` are within that file's line count; then retry. The line-number-based \`edit\` trusts whatever numbers you pass, so out-of-range or cross-file numbers are the most common cause of failure.
+- treat that as a **stale or non-matching anchor**, not a signal to stop — refresh with \`read\` and fix \`oldText\` before any other strategy
 
 ---
 
-
-`;
+`
 
 export interface BuildSystemPromptOptions {
 	/** Custom system prompt (replaces default). */
@@ -816,6 +575,7 @@ export function buildSystemPrompt(options: BuildSystemPromptOptions = {}): strin
 			prompt += appendSection;
 		}
 
+		// Append project context files
 		if (contextFiles.length > 0) {
 			prompt += "\n\n# Project Context\n\n";
 			prompt += "Project-specific instructions and guidelines:\n\n";
@@ -824,31 +584,39 @@ export function buildSystemPrompt(options: BuildSystemPromptOptions = {}): strin
 			}
 		}
 
+		// Append skills section (only if read tool is available)
 		const customPromptHasRead = !selectedTools || selectedTools.includes("read");
 		if (customPromptHasRead && skills.length > 0) {
 			prompt += "\n\n# Skilled Section\n\n";
 			prompt += formatSkillsForPrompt(skills);
 		}
 
+		// Add date and working directory last
 		prompt += `\nCurrent date: ${date}`;
 		prompt += `\nCurrent working directory: ${promptCwd}`;
 
 		return prompt;
 	}
 
+	// Get absolute paths to documentation and examples
 	const readmePath = getReadmePath();
 	const docsPath = getDocsPath();
 	const examplesPath = getExamplesPath();
 
+	// Build tools list based on selected tools.
+	// A tool appears in Available tools only when the caller provides a one-line snippet.
 	const tools = selectedTools || ["read", "bash", "grep", "find", "ls", "edit", "write"];
 	const visibleTools = tools.filter((name) => !!toolSnippets?.[name]);
 	const toolsList =
 		visibleTools.length > 0 ? visibleTools.map((name) => `- ${name}: ${toolSnippets![name]}`).join("\n") : "(none)";
 
+	// Build guidelines based on which tools are actually available
 	const guidelinesList: string[] = [];
 	const guidelinesSet = new Set<string>();
 	const addGuideline = (guideline: string): void => {
-		if (guidelinesSet.has(guideline)) return;
+		if (guidelinesSet.has(guideline)) {
+			return;
+		}
 		guidelinesSet.add(guideline);
 		guidelinesList.push(guideline);
 	};
@@ -859,6 +627,7 @@ export function buildSystemPrompt(options: BuildSystemPromptOptions = {}): strin
 	const hasLs = tools.includes("ls");
 	const hasRead = tools.includes("read");
 
+	// File exploration guidelines
 	if (hasBash && !hasGrep && !hasFind && !hasLs) {
 		addGuideline("Use bash for file operations like ls, rg, find");
 	} else if (hasBash && (hasGrep || hasFind || hasLs)) {
@@ -867,9 +636,12 @@ export function buildSystemPrompt(options: BuildSystemPromptOptions = {}): strin
 
 	for (const guideline of promptGuidelines ?? []) {
 		const normalized = guideline.trim();
-		if (normalized.length > 0) addGuideline(normalized);
+		if (normalized.length > 0) {
+			addGuideline(normalized);
+		}
 	}
 
+	// Always include these
 	addGuideline("Be concise in your responses");
 	addGuideline("Show file paths clearly when working with files");
 
@@ -890,13 +662,22 @@ In addition to the tools above, you may have access to other custom tools depend
 ${guidelines}
 `;
 
-	prompt += TAU_SCORING_PREAMBLE_FOR_MAIN_BRANCH;
+	prompt += TAU_SCORING_PREAMBLE_FOR_MAIN_BRANCH
+
+	// 	prompt += `Pi documentation (read only when the user asks about pi itself, its SDK, extensions, themes, skills, or TUI):
+	// - Main documentation: ${readmePath}
+	// - Additional docs: ${docsPath}
+	// - Examples: ${examplesPath} (extensions, custom tools, SDK)
+	// - When asked about: extensions (docs/extensions.md, examples/extensions/), themes (docs/themes.md), skills (docs/skills.md), prompt templates (docs/prompt-templates.md), TUI components (docs/tui.md), keybindings (docs/keybindings.md), SDK integrations (docs/sdk.md), custom providers (docs/custom-provider.md), adding models (docs/models.md), pi packages (docs/packages.md)
+	// - When working on pi topics, read the docs and examples, and follow .md cross-references before implementing
+	// - Always read pi .md files completely and follow links to related docs (e.g., tui.md for TUI API details)`;
 
 	if (appendSection) {
 		prompt += "\n\n## Appended Section\n\n";
 		prompt += appendSection;
 	}
 
+	// Append project context files
 	if (contextFiles.length > 0) {
 		prompt += "\n\n## Project Context\n\n";
 		prompt += "Project-specific instructions and guidelines:\n\n";
@@ -905,11 +686,13 @@ ${guidelines}
 		}
 	}
 
+	// Append skills section (only if read tool is available)
 	if (hasRead && skills.length > 0) {
 		prompt += "\n\n## Skilled Section\n\n";
 		prompt += formatSkillsForPrompt(skills);
 	}
 
+	// Add date and working directory last
 	prompt += `\nCurrent date: ${date}`;
 	prompt += `\nCurrent working directory: ${promptCwd}`;
 
