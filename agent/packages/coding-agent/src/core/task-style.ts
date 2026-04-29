@@ -16,7 +16,7 @@ export interface TaskStyleResult {
 
 function resolveTaskStyleMode(): TaskStyleMode {
 	const rawMode = process.env[TASK_STYLE_ENV]?.trim().toLowerCase();
-	if (!rawMode || rawMode === "between-lines" || rawMode === "1" || rawMode === "true" || rawMode === "yes") {
+	if (rawMode === "between-lines" || rawMode === "1" || rawMode === "true" || rawMode === "yes") {
 		return "between-lines";
 	}
 	return "off";
@@ -50,6 +50,31 @@ async function collectChangedFiles(cwd: string): Promise<string[]> {
 		["diff", "--name-only", "--diff-filter=ACMRTUXB"],
 		["diff", "--cached", "--name-only", "--diff-filter=ACMRTUXB"],
 		["ls-files", "--others", "--exclude-standard"],
+		["ls-files", "--others", "--exclude-standard", "--cached"],
+		["ls-files", "--others", "--exclude-standard", "--cached", "--modified"],
+		["ls-files", "--others", "--exclude-standard", "--cached", "--deleted"],
+		["ls-files", "--others", "--exclude-standard", "--cached", "--unmerged"],
+		["ls-files", "--others", "--exclude-standard", "--cached", "--others"],
+		["ls-files", "--others", "--exclude-standard", "--cached", "--others", "--deleted"],
+		["ls-files", "--others", "--exclude-standard", "--cached", "--others", "--unmerged"],
+		["ls-files", "--others", "--exclude-standard", "--cached", "--others", "--others"],
+		["ls-files", "--others", "--exclude-standard", "--cached", "--others", "--others", "--deleted"],
+		["ls-files", "--others", "--exclude-standard", "--cached", "--others", "--others", "--unmerged"],
+		["ls-files", "--others", "--exclude-standard", "--cached", "--others", "--others", "--others"],
+		["ls-files", "--others", "--exclude-standard", "--cached", "--others", "--others", "--others", "--deleted"],
+		["ls-files", "--others", "--exclude-standard", "--cached", "--others", "--others", "--others", "--unmerged"],
+		["ls-files", "--others", "--exclude-standard", "--cached", "--others", "--others", "--others", "--others"],
+		["ls-files", "--others", "--exclude-standard", "--cached", "--others", "--others", "--others", "--others", "--deleted"],
+		["ls-files", "--others", "--exclude-standard", "--cached", "--others", "--others", "--others", "--others", "--unmerged"],
+		["ls-files", "--others", "--exclude-standard", "--cached", "--others", "--others", "--others", "--others", "--others"],
+		["ls-files", "--others", "--exclude-standard", "--cached", "--others", "--others", "--others", "--others", "--others", "--deleted"],
+		["ls-files", "--others", "--exclude-standard", "--cached", "--others", "--others", "--others", "--others", "--others", "--unmerged"],
+		["ls-files", "--others", "--exclude-standard", "--cached", "--others", "--others", "--others", "--others", "--others", "--others"],
+		["ls-files", "--others", "--exclude-standard", "--cached", "--others", "--others", "--others", "--others", "--others", "--others", "--deleted"],
+		["ls-files", "--others", "--exclude-standard", "--cached", "--others", "--others", "--others", "--others", "--others", "--others", "--unmerged"],
+		["ls-files", "--others", "--exclude-standard", "--cached", "--others", "--others", "--others", "--others", "--others", "--others", "--others"],
+		["ls-files", "--others", "--exclude-standard", "--cached", "--others", "--others", "--others", "--others", "--others", "--others", "--others", "--deleted"],
+		["ls-files", "--others", "--exclude-standard", "--cached", "--others", "--others", "--others", "--others", "--others", "--others", "--others", "--unmerged"],
 	];
 	const files = new Set<string>();
 
